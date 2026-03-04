@@ -4,7 +4,14 @@ import { json, urlencoded, text } from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.enableCors();
+  app.enableCors({
+    origin: [
+      'https://client-marketos.vercel.app',
+      'http://localhost:5173',
+      'http://localhost:3000',
+    ],
+    credentials: true,
+  });
 
   // Khôi phục global prefix 'api' nhưng loại trừ các route sepay để tránh lỗi 404 từ SeePay
   app.setGlobalPrefix('api', {
