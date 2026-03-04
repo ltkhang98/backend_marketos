@@ -1,0 +1,274 @@
+import { Controller, Post, Body, UseGuards, Get, Query, Res, Req, InternalServerErrorException, UseInterceptors, UploadedFile, Param } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { AiService } from './ai.service';
+import { FirebaseGuard } from '../auth/firebase.guard';
+import type { Response } from 'express';
+
+@Controller('ai')
+export class AiController {
+    constructor(private readonly aiService: AiService) { }
+
+    @UseGuards(FirebaseGuard)
+    @Post('generate-social-content')
+    async generateSocialContent(@Body() body: any, @Req() req: any) {
+        return this.aiService.generateContent(body, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('text-to-speech')
+    async textToSpeech(@Body() body: { text: string; voice: string; speed: number }, @Req() req: any) {
+        return this.aiService.generateSpeech(body, req.user.uid);
+    }
+
+    @Get('download')
+    async download(@Query('url') url: string, @Res() res: Response) {
+        try {
+            const streamResponse = await this.aiService.downloadProxy(url);
+
+            res.set({
+                'Content-Type': 'audio/mpeg',
+                'Content-Disposition': `attachment; filename="market-os-speech.mp3"`,
+            });
+
+            streamResponse.data.pipe(res);
+        } catch (error) {
+            res.status(500).send('Lỗi khi tải file: ' + error.message);
+        }
+    }
+
+
+    @UseGuards(FirebaseGuard)
+    @Post('generate-mockup')
+    async generateMockup(@Body() body: { prompt: string; productImage?: string; modelImage?: string; aspectRatio?: string }, @Req() req: any) {
+        return this.aiService.generateImageMockup(body.prompt, body.productImage, body.modelImage, body.aspectRatio, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('scrape-product')
+    async scrapeProduct(@Body() body: { url: string }, @Req() req: any) {
+        return this.aiService.scrapeProductData(body.url, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('generate-video-concept')
+    async generateVideoConcept(@Body() body: any, @Req() req: any) {
+        return this.aiService.generateVideoScript(body, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('generate-planning')
+    async generatePlanning(@Body() body: any, @Req() req: any) {
+        return this.aiService.generateMarketingPlan(body, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('tiktok-download')
+    async tiktokDownload(@Body() body: { url: string }, @Req() req: any) {
+        return this.aiService.downloadTikTokVideo(body.url, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('video-download')
+    async videoDownload(@Body() body: { url: string }, @Req() req: any) {
+        return this.aiService.downloadUniversalVideo(body.url, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('tiktok-analytics')
+    async tiktokAnalytics(@Body() body: { uniqueId: string }, @Req() req: any) {
+        try {
+            return await this.aiService.analyzeTikTokChannel(body.uniqueId, req.user.uid);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('tiktok-generate-script')
+    async tiktokGenerateScript(@Body() body: { uniqueId: string; niche: string }, @Req() req: any) {
+        try {
+            return await this.aiService.generateTikTokVideoScript(body.uniqueId, body.niche, req.user.uid);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('fb-ad-analysis')
+    async fbAdAnalysis(@Body() body: { url: string }, @Req() req: any) {
+        try {
+            const userId = req.user.uid;
+            return await this.aiService.analyzeFacebookAd(body.url, userId);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Get('fb-ad-analysis-history')
+    async getAdsAnalysisHistory(@Req() req: any) {
+        try {
+            const userId = req.user.uid;
+            return await this.aiService.getAdsAnalysisHistory(userId);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('fb-ad-comparison')
+    async fbAdComparison(@Body() body: { analysisA: any, analysisB: any }, @Req() req: any) {
+        try {
+            return await this.aiService.compareFacebookAds(body.analysisA, body.analysisB, req.user.uid);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('fetch-social-content')
+    async fetchSocialContent(@Body() body: { url: string }, @Req() req: any) {
+        try {
+            return await this.aiService.fetchContentFromUrl(body.url, req.user.uid);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('discovery-keyword')
+    async discoveryKeyword(@Body() body: { keyword: string }, @Req() req: any) {
+        try {
+            return await this.aiService.searchKeywordDiscovery(body.keyword, 0, req.user.uid);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('keyword-detail')
+    async keywordDetail(@Body() body: { keyword: string }, @Req() req: any) {
+        try {
+            return await this.aiService.getKeywordDetail(body.keyword, req.user.uid);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('trending-keywords')
+    async trendingKeywords(@Body() body: { category: string }, @Req() req: any) {
+        try {
+            return await this.aiService.getTrendingKeywords(body.category, req.user.uid);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('evaluate-improve-content')
+    async evaluateImproveContent(@Body() body: { content: string, platform: string }, @Req() req: any) {
+        try {
+            return await this.aiService.evaluateAndImproveContent(body.content, body.platform, req.user.uid);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Get('tiktok-trending')
+    async tiktokTrending(
+        @Query('region') region: string,
+        @Query('count') count: number,
+        @Query('category') category: string | undefined,
+        @Query('refresh') refresh: string | undefined,
+        @Req() req: any
+    ) {
+        try {
+            return await this.aiService.getTikTokTrending(region, count, refresh === 'true', category, req.user.uid);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('generate-landing-page')
+    async generateLandingPage(@Body() body: { prompt: string }) {
+        try {
+            // Theo yêu cầu của user: website và landing page không tính phí credit
+            return await this.aiService.generateLandingPage(body.prompt);
+        } catch (error) {
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('auto-sub')
+    @UseInterceptors(FileInterceptor('video'))
+    async autoSubtitles(
+        @UploadedFile() file: any,
+        @Body('srcLang') srcLang: string,
+        @Body('targetLang') targetLang: string,
+        @Body('style') style: string,
+        @Body('fontSize') fontSize: number,
+        @Body('yPos') yPos: number,
+        @Req() req: any
+    ) {
+        if (!file) {
+            throw new InternalServerErrorException('Không tìm thấy file video tải lên.');
+        }
+        return await this.aiService.generateAutoSubtitles(file, srcLang || 'Auto', targetLang || 'Vietnamese', style || 'tiktok', fontSize, yPos, req.user.uid);
+    }
+
+    @Get('stream-sub-video/:id')
+    async streamBurnedVideo(@Param('id') id: string, @Req() req: any, @Res() res: Response) {
+        try {
+            // Không tính phí stream/download video đã sub vì đã tính phí lúc tạo sub
+            const { stream, size, path } = await this.aiService.streamBurnedVideo(id, req, res);
+        } catch (error) {
+            if (!res.headersSent) {
+                res.status(500).send('Lỗi khi xem video: ' + error.message);
+            }
+        }
+    }
+
+    @Get('download-sub-video/:id')
+    async downloadBurnedVideo(@Param('id') id: string, @Res() res: Response) {
+        try {
+            const { stream, size } = await this.aiService.downloadBurnedVideo(id);
+            res.set({
+                'Content-Type': 'video/mp4',
+                'Content-Length': size.toString(),
+                'Content-Disposition': 'attachment; filename="auto-sub-' + id + '.mp4"',
+            });
+            stream.pipe(res);
+        } catch (error) {
+            res.status(500).send('Lỗi khi tải video: ' + error.message);
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('update-sub')
+    async updateSubtitles(
+        @Body('videoId') videoId: string,
+        @Body('srtContent') srtContent: string,
+        @Body('style') style: string,
+        @Body('fontSize') fontSize: number,
+        @Body('yPos') yPos: number,
+        @Req() req: any
+    ) {
+        // Update sub cũng có thể tính phí nhẹ hoặc không tùy anh, hiện tại em để miễn phí vì là chỉnh sửa
+        return await this.aiService.updateSrtContent(videoId, srtContent, style, fontSize, yPos);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('run-automation/:id')
+    async runAutomation(@Param('id') id: string, @Req() req: any) {
+        try {
+            return await this.aiService.runAutomationById(id, req.user.uid);
+        } catch (error) {
+            console.error('Lỗi API run-automation:', error);
+            throw new InternalServerErrorException(error.message);
+        }
+    }
+}
