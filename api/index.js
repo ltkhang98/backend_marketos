@@ -1,16 +1,18 @@
-import 'reflect-metadata';
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from '../dist/app.module';
-import { json, urlencoded, text } from 'express';
-import { ExpressAdapter } from '@nestjs/platform-express';
-import express from 'express';
+const { NestFactory } = require('@nestjs/core');
+const { AppModule } = require('../dist/app.module');
+const { json, urlencoded, text } = require('express');
+const { ExpressAdapter } = require('@nestjs/platform-express');
+const express = require('express');
 
 const server = express();
 let app;
 
 async function bootstrap() {
     if (!app) {
-        const nestApp = await NestFactory.create(AppModule, new ExpressAdapter(server));
+        const nestApp = await NestFactory.create(
+            AppModule,
+            new ExpressAdapter(server),
+        );
 
         nestApp.enableCors({
             origin: [
@@ -38,7 +40,7 @@ async function bootstrap() {
             exclude: [
                 'payments/sepay-webhook',
                 'sepay-webhook',
-                'payments'
+                'payments',
             ],
         });
 
@@ -53,6 +55,6 @@ async function bootstrap() {
 }
 
 module.exports = async (req, res) => {
-    const app = await bootstrap();
-    app(req, res);
+    const instance = await bootstrap();
+    instance(req, res);
 };
