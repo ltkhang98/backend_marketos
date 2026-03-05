@@ -1,201 +1,209 @@
-import { Injectable, Inject, InternalServerErrorException, BadRequestException, OnModuleInit } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import axios from 'axios';
-import * as admin from 'firebase-admin';
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
-import { v4 as uuidv4 } from 'uuid';
-const ffmpeg = require('fluent-ffmpeg');
-import { GoogleAIFileManager } from '@google/generative-ai/server';
-
-@Injectable()
-export class AiService implements OnModuleInit {
-    private genAI: GoogleGenerativeAI;
-    private model: any;
-    private tikwmBaseUrl = 'https://www.tikwm.com/api/';
-    private cache: Map<string, { data: any, timestamp: number }> = new Map();
-    private CACHE_TTL = 30 * 60 * 1000; // 30 minutes in ms
-    private currentGeminiKey: string | undefined;
-    private currentFptKey: string | undefined;
-    private currentScrapingBeeKey: string | undefined;
-    private currentRapidApiKey: string | undefined;
-
-    // Bảng giá Credit (Tokens) cho từng tính năng
-    private readonly CREDIT_COSTS = {
-        SOCIAL_CONTENT: 200,      // Viết kịch bản/nội dung
-        MARKETING_PLAN: 300,      // Lên kế hoạch marketing
-        CONTENT_EVALUATION: 100,  // Đánh giá/Tối ưu nội dung
-        ADS_ANALYSIS: 250,        // Phân tích quảng cáo FB
-        TIKTOK_ANALYTICS: 300,    // Phân tích kênh TikTok
-        PRODUCT_SCRAPER: 300,     // Cào dữ liệu sản phẩm
-        KEYWORD_DISCOVERY: 200,   // Khám phá từ khóa
-        ADS_COMPARISON: 100,      // So sánh quảng cáo
-        AUTO_SUB_PER_MIN: 1000,   // Phụ đề tự động (mỗi phút)
-        TTS_PER_100_CHARS: 10,    // Chuyển văn bản thành giọng nói (vẫn giữ base rate)
-        TEXT_TO_SPEECH: 100,      // Giá cố định hiển thị UI
-        MOCKUP: 500,              // Tạo mockup AI
-        VIDEO_DOWNLOAD: 200,      // Tải video đa nền tảng
-        TIKTOK_TRENDING: 200,     // Phân tích xu hướng TikTok
-        TIKTOK_SCRIPT: 200        // Tạo kịch bản TikTok
+"use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
+    var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
+    if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
+    else for (var i = decorators.length - 1; i >= 0; i--) if (d = decorators[i]) r = (c < 3 ? d(r) : c > 3 ? d(target, key, r) : d(target, key)) || r;
+    return c > 3 && r && Object.defineProperty(target, key, r), r;
+};
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
     };
-
-    constructor(
-        private configService: ConfigService,
-        @Inject('FIREBASE_ADMIN') private firebaseAdmin: admin.app.App
-    ) {
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
+var __metadata = (this && this.__metadata) || function (k, v) {
+    if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
+};
+var __param = (this && this.__param) || function (paramIndex, decorator) {
+    return function (target, key) { decorator(target, key, paramIndex); }
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AiService = void 0;
+const common_1 = require("@nestjs/common");
+const config_1 = require("@nestjs/config");
+const generative_ai_1 = require("@google/generative-ai");
+const axios_1 = __importDefault(require("axios"));
+const admin = __importStar(require("firebase-admin"));
+const fs = __importStar(require("fs"));
+const path = __importStar(require("path"));
+const os = __importStar(require("os"));
+const uuid_1 = require("uuid");
+const ffmpeg = require('fluent-ffmpeg');
+const server_1 = require("@google/generative-ai/server");
+let AiService = class AiService {
+    configService;
+    firebaseAdmin;
+    genAI;
+    model;
+    tikwmBaseUrl = 'https://www.tikwm.com/api/';
+    cache = new Map();
+    CACHE_TTL = 30 * 60 * 1000;
+    currentGeminiKey;
+    currentFptKey;
+    currentScrapingBeeKey;
+    currentRapidApiKey;
+    CREDIT_COSTS = {
+        SOCIAL_CONTENT: 200,
+        MARKETING_PLAN: 300,
+        CONTENT_EVALUATION: 100,
+        ADS_ANALYSIS: 250,
+        TIKTOK_ANALYTICS: 300,
+        PRODUCT_SCRAPER: 300,
+        KEYWORD_DISCOVERY: 200,
+        ADS_COMPARISON: 100,
+        AUTO_SUB_PER_MIN: 1000,
+        TTS_PER_100_CHARS: 10,
+        TEXT_TO_SPEECH: 100,
+        MOCKUP: 500,
+        VIDEO_DOWNLOAD: 200,
+        TIKTOK_TRENDING: 200,
+        TIKTOK_SCRIPT: 200
+    };
+    constructor(configService, firebaseAdmin) {
+        this.configService = configService;
+        this.firebaseAdmin = firebaseAdmin;
         this.initializeModels();
         this.listenToApiKeys();
     }
-
-    private initializeModels() {
-        // Fallback to .env initially
-        const geminiKey = this.configService.get<string>('GEMINI_API_KEY')?.trim();
-        const fptKey = this.configService.get<string>('FPT_AI_API_KEY')?.trim();
-
+    initializeModels() {
+        const geminiKey = this.configService.get('GEMINI_API_KEY')?.trim();
+        const fptKey = this.configService.get('FPT_AI_API_KEY')?.trim();
         if (geminiKey) {
             this.currentGeminiKey = geminiKey;
-            this.genAI = new GoogleGenerativeAI(geminiKey);
+            this.genAI = new generative_ai_1.GoogleGenerativeAI(geminiKey);
             this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
         }
         this.currentFptKey = fptKey;
     }
-
-    private listenToApiKeys() {
+    listenToApiKeys() {
         try {
             const db = this.firebaseAdmin.firestore();
-
-            // Listen to API Keys
             db.collection('settings').doc('api_keys').onSnapshot(doc => {
                 if (doc.exists) {
                     const data = doc.data();
                     console.log('--- API Keys Updated from Firestore ---');
-
-                    // Update Gemini
                     const newGeminiKey = data?.gemini?.trim();
                     if (newGeminiKey && newGeminiKey !== this.currentGeminiKey) {
                         console.log('--- Reloading Gemini Model with New Key ---');
                         this.currentGeminiKey = newGeminiKey;
-                        this.genAI = new GoogleGenerativeAI(newGeminiKey);
+                        this.genAI = new generative_ai_1.GoogleGenerativeAI(newGeminiKey);
                         this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
                     }
-
-                    // Update FPT
                     const newFptKey = data?.fpt?.trim();
                     if (newFptKey) {
                         this.currentFptKey = newFptKey;
                     }
-
-                    // Update ScrapingBee
                     const newScrapingBeeKey = data?.scrapingbee?.trim();
                     if (newScrapingBeeKey) {
                         this.currentScrapingBeeKey = newScrapingBeeKey;
                     }
-
-                    // Update RapidAPI
                     const newRapidApiKey = data?.rapidapi?.trim();
                     if (newRapidApiKey) {
                         this.currentRapidApiKey = newRapidApiKey;
                     }
                 }
             });
-
-            // Listen to Credit Costs
             db.collection('settings').doc('credit_costs').onSnapshot(doc => {
                 if (doc.exists) {
                     const data = doc.data();
                     console.log('--- Credit Costs Updated from Firestore ---');
-                    // Ghi đè các giá trị mặc định bằng giá trị từ Firestore
                     Object.keys(this.CREDIT_COSTS).forEach(key => {
                         if (data && data[key] !== undefined) {
-                            (this.CREDIT_COSTS as any)[key] = Number(data[key]);
+                            this.CREDIT_COSTS[key] = Number(data[key]);
                         }
                     });
-                } else {
-                    // Nếu chưa có document, tạo mới với giá trị mặc định
+                }
+                else {
                     db.collection('settings').doc('credit_costs').set(this.CREDIT_COSTS).catch(err => {
                         console.error('Error creating default credit_costs doc:', err);
                     });
                 }
             });
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Error listening to dynamic settings:', error);
         }
     }
-
-    /**
-     * Trừ credit của người dùng
-     * @param userId ID người dùng từ Firebase Auth
-     * @param cost Số lượng credit cần trừ
-     * @param featureName Tên tính năng (để báo lỗi)
-     */
-    private async deductCredits(userId: string, cost: number, featureName: string) {
+    async deductCredits(userId, cost, featureName) {
         if (!userId) {
-            throw new BadRequestException('Không tìm thấy thông tin người dùng.');
+            throw new common_1.BadRequestException('Không tìm thấy thông tin người dùng.');
         }
-
         const db = this.firebaseAdmin.firestore();
         const userRef = db.collection('users').doc(userId);
-
         try {
             const result = await db.runTransaction(async (transaction) => {
                 const userDoc = await transaction.get(userRef);
-
                 if (!userDoc.exists) {
-                    throw new BadRequestException('Tài khoản người dùng không tồn tại.');
+                    throw new common_1.BadRequestException('Tài khoản người dùng không tồn tại.');
                 }
-
                 const userData = userDoc.data();
                 const currentTokens = userData?.tokens || 0;
-
                 if (currentTokens < cost) {
-                    throw new BadRequestException(
-                        `Bạn không đủ Credits để sử dụng tính năng ${featureName}. ` +
+                    throw new common_1.BadRequestException(`Bạn không đủ Credits để sử dụng tính năng ${featureName}. ` +
                         `Cần ${cost} Credits, hiện có ${currentTokens.toLocaleString()} Credits. ` +
-                        `Vui lòng mua thêm gói Credits.`
-                    );
+                        `Vui lòng mua thêm gói Credits.`);
                 }
-
-                // Thực hiện trừ tokens
                 transaction.update(userRef, {
                     tokens: admin.firestore.FieldValue.increment(-cost),
                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
                 });
-
                 return true;
             });
-
             return result;
-        } catch (error) {
-            if (error instanceof BadRequestException) throw error;
+        }
+        catch (error) {
+            if (error instanceof common_1.BadRequestException)
+                throw error;
             console.error(`Error deducting credits for user ${userId}:`, error);
-            throw new InternalServerErrorException('Lỗi hệ thống khi kiểm tra tài khoản.');
+            throw new common_1.InternalServerErrorException('Lỗi hệ thống khi kiểm tra tài khoản.');
         }
     }
-
-    async analyzeFacebookAd(url: string = '', userId: string): Promise<any> {
+    async analyzeFacebookAd(url = '', userId) {
         if (!this.model) {
             throw new Error('Gemini API Key is not configured');
         }
-
         await this.deductCredits(userId, this.CREDIT_COSTS.ADS_ANALYSIS, 'Phân tích quảng cáo Facebook');
-
         const isAllowed = await this.checkLimit('gemini');
         if (!isAllowed) {
             throw new Error('Hạn mức sử dụng Gemini đã hết. Vui lòng nâng cấp gói.');
         }
-
         await this.trackUsage('gemini');
-
         try {
             console.log(`--- Analyzing Facebook Ad: ${url} (User: ${userId}) ---`);
-
             let html = '';
-            // Try to scrape content if it's a valid URL and ScrapingBee is available
             if (url && url.includes('facebook.com') && this.currentScrapingBeeKey) {
                 try {
-                    const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+                    const sbResponse = await axios_1.default.get('https://app.scrapingbee.com/api/v1', {
                         params: {
                             'api_key': this.currentScrapingBeeKey,
                             'url': url,
@@ -206,11 +214,11 @@ export class AiService implements OnModuleInit {
                         timeout: 30000
                     });
                     html = sbResponse.data;
-                } catch (e) {
+                }
+                catch (e) {
                     console.warn("Scraping FB Ad failed, proceeding with content inference if possible:", e.message);
                 }
             }
-
             const prompt = `
             Bạn là một chuyên gia phân tích quảng cáo (Creative Strategist) chuyên nghiệp. 
             Nhiệm vụ của bạn là bóc tách và phân tích mẫu quảng cáo dưới đây theo đúng QUY TRÌNH 6 GIAI ĐOẠN chuyên sâu.
@@ -271,14 +279,10 @@ export class AiService implements OnModuleInit {
                 }
             }
             `;
-
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
             const cleanJson = responseText.replace(/```json|```/g, '').trim();
-
             const parsedResult = JSON.parse(cleanJson);
-
-            // Save to Firestore History
             const db = this.firebaseAdmin.firestore();
             await db.collection('ads_analysis_history').add({
                 userId,
@@ -286,15 +290,14 @@ export class AiService implements OnModuleInit {
                 ...parsedResult,
                 createdAt: admin.firestore.FieldValue.serverTimestamp()
             });
-
             return parsedResult;
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Facebook Ad Analysis Error:", error.message);
             throw new Error('Lỗi khi phân tích quảng cáo: ' + error.message);
         }
     }
-
-    async getAdsAnalysisHistory(userId: string): Promise<any[]> {
+    async getAdsAnalysisHistory(userId) {
         try {
             const db = this.firebaseAdmin.firestore();
             const snapshot = await db.collection('ads_analysis_history')
@@ -302,22 +305,20 @@ export class AiService implements OnModuleInit {
                 .orderBy('createdAt', 'desc')
                 .limit(20)
                 .get();
-
             return snapshot.docs.map(doc => ({
                 id: doc.id,
                 ...doc.data()
             }));
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Error fetching Ads Analysis History:", error);
             return [];
         }
     }
-
-    async compareFacebookAds(analysisA: any, analysisB: any, userId: string): Promise<any> {
-        if (!this.model) return null;
-
+    async compareFacebookAds(analysisA, analysisB, userId) {
+        if (!this.model)
+            return null;
         await this.deductCredits(userId, this.CREDIT_COSTS.ADS_COMPARISON, 'So sánh quảng cáo');
-
         try {
             const prompt = `
             BẠN LÀ MỘT CHUYÊN GIA TỐI ƯU QUẢNG CÁO (ADS OPTIMIZATION EXPERT).
@@ -349,26 +350,24 @@ export class AiService implements OnModuleInit {
                 "recommendation": "Lời khuyên tổng thể để kết hợp điểm mạnh của cả hai"
             }
             `;
-
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
             const cleanJson = responseText.replace(/```json|```/g, '').trim();
             return JSON.parse(cleanJson);
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Compare Ads Error:", error.message);
             throw new Error('Lỗi khi so sánh quảng cáo: ' + error.message);
         }
     }
-
-    async fetchContentFromUrl(url: string, userId: string): Promise<any> {
-        if (!url) throw new Error('URL không hợp lệ');
-
+    async fetchContentFromUrl(url, userId) {
+        if (!url)
+            throw new Error('URL không hợp lệ');
         await this.deductCredits(userId, this.CREDIT_COSTS.SOCIAL_CONTENT, 'Phân tích nội dung mạng xã hội');
-
         try {
             let html = '';
             if (this.currentScrapingBeeKey) {
-                const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+                const sbResponse = await axios_1.default.get('https://app.scrapingbee.com/api/v1', {
                     params: {
                         'api_key': this.currentScrapingBeeKey,
                         'url': url,
@@ -379,11 +378,11 @@ export class AiService implements OnModuleInit {
                     timeout: 40000
                 });
                 html = sbResponse.data;
-            } else {
-                const response = await axios.get(url, { timeout: 10000 });
+            }
+            else {
+                const response = await axios_1.default.get(url, { timeout: 10000 });
                 html = response.data;
             }
-
             const prompt = `
             BẠN LÀ MỘT CHUYÊN GIA TRÍCH XUẤT DỮ LIỆU (DATA SCRAPER).
             Nhiệm vụ của bạn là trích xuất thông tin bài đăng từ HTML của một mạng xã hội (${url}).
@@ -415,19 +414,16 @@ export class AiService implements OnModuleInit {
                 }
             }
             `;
-
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
             const cleanJson = responseText.replace(/```json|```/g, '').trim();
             const parsed = JSON.parse(cleanJson);
-
-            // Helper to clean numeric strings
-            const cleanNum = (val: any) => {
-                if (!val) return '0';
+            const cleanNum = (val) => {
+                if (!val)
+                    return '0';
                 const str = String(val).replace(/[^0-9KkMm.,]/g, '').trim();
                 return str || '0';
             };
-
             return {
                 title: parsed.title || '',
                 content: parsed.content || '',
@@ -439,22 +435,18 @@ export class AiService implements OnModuleInit {
                     shares: cleanNum(parsed.engagement?.shares)
                 }
             };
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Fetch Detailed Content Error:", error.message);
             throw new Error('Lỗi khi trích xuất thông tin bài viết: ' + error.message);
         }
     }
-
-    async searchKeywordDiscovery(query: string, retryCount = 0, userId: string): Promise<any[]> {
-        if (!this.currentScrapingBeeKey) return []; // Changed from RapidAPI to ScrapingBee as it's used here
-
+    async searchKeywordDiscovery(query, retryCount = 0, userId) {
+        if (!this.currentScrapingBeeKey)
+            return [];
         await this.deductCredits(userId, this.CREDIT_COSTS.KEYWORD_DISCOVERY, 'Khám phá từ khóa');
-
         try {
-            // URL tối ưu hơn cho Việt Nam
             const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&q=${encodeURIComponent(query)}&sort_data[direction]=desc&sort_data[mode]=relevancy_monthly_grouped&start_date[min]=&start_date[max]=&search_type=keyword_unordered&media_type=all`;
-
-            // Script xử lý cực mạnh và nhanh để tránh 504 Timeout
             const cleanScript = Buffer.from(`
                 async function fastScrape() {
                     const delay = (ms) => new Promise(r => setTimeout(r, ms));
@@ -491,8 +483,7 @@ export class AiService implements OnModuleInit {
                 }
                 fastScrape();
             `).toString('base64');
-
-            const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+            const sbResponse = await axios_1.default.get('https://app.scrapingbee.com/api/v1', {
                 params: {
                     'api_key': this.currentScrapingBeeKey,
                     'url': searchUrl,
@@ -509,9 +500,7 @@ export class AiService implements OnModuleInit {
                 validateStatus: () => true,
                 responseType: 'text'
             });
-
             const html = sbResponse.data;
-
             if (typeof html !== 'string' || html.length < 1000) {
                 if (html?.includes("limit reached")) {
                     console.error("--- CRITICAL: ScrapingBee API Key đã đạt giới hạn (Limit Reached). ---");
@@ -519,18 +508,16 @@ export class AiService implements OnModuleInit {
                 }
                 if (html?.includes("504 Gateway") || html?.includes("Time-out")) {
                     console.error("--- ERROR: Lỗi 504 Gateway Time-out từ Proxy. Đang thử lại nhanh... ---");
-                } else {
+                }
+                else {
                     console.warn(`[Attempt ${retryCount}] Lỗi nội dung ngắn (${html?.length || 0} ký tự).`);
                 }
-
                 if (retryCount < 2) {
                     return this.searchKeywordDiscovery(query, retryCount + 1, userId);
                 }
                 return [];
             }
-
             console.log(`Đã lấy dữ liệu thành công cho Keyword: ${query}. Phân tích AI...`);
-
             const prompt = `
                 Bạn là một Chuyên gia nghiên cứu Keyword & Xu hướng thị trường (Market Research Expert).
                 Nhiệm vụ: Phân tích sức mạnh và xu hướng của Keyword "${query}" thông qua TOP 9 quảng cáo đang chạy hiệu quả nhất.
@@ -571,24 +558,22 @@ export class AiService implements OnModuleInit {
 
                 CHỈ TRẢ VỀ JSON ARRAY. KHÔNG GIẢI THÍCH.
                 `;
-
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
-
-            if (!responseText) return [];
-
+            if (!responseText)
+                return [];
             const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-            if (!jsonMatch) return [];
-
+            if (!jsonMatch)
+                return [];
             const parsed = JSON.parse(jsonMatch[0]);
-
             return Array.isArray(parsed) ? parsed.map(ad => ({
                 ...ad,
                 id: String(ad.id).replace(/\D/g, ''),
                 image: (ad.image && ad.image.includes('http')) ? ad.image : null,
                 score: ad.score || (Math.random() * (9.9 - 8.5) + 8.5).toFixed(1)
             })).slice(0, 9) : [];
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Keyword Discovery Error Detail:", error.code || error.message);
             if (retryCount < 1 && (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT')) {
                 return this.searchKeywordDiscovery(query, retryCount + 1, userId);
@@ -596,12 +581,10 @@ export class AiService implements OnModuleInit {
             return [];
         }
     }
-
-    async getTrendingKeywords(category: string, userId: string): Promise<any[]> {
-        if (!this.model) return []; // Changed from RapidAPI to model as it's used here
-
+    async getTrendingKeywords(category, userId) {
+        if (!this.model)
+            return [];
         await this.deductCredits(userId, this.CREDIT_COSTS.KEYWORD_DISCOVERY, 'Từ khóa xu hướng');
-
         try {
             const prompt = `
             Bạn là một chuyên gia Market Research và SEO Analysis.
@@ -629,25 +612,22 @@ export class AiService implements OnModuleInit {
 
             CHỈ TRẢ VỀ JSON ARRAY GỒM 12-15 TỪ KHÓA. KHÔNG GIẢI THÍCH.
             `;
-
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
-
             const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-            if (!jsonMatch) return [];
-
+            if (!jsonMatch)
+                return [];
             return JSON.parse(jsonMatch[0]);
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Get Trending Keywords Error:", error);
             return [];
         }
     }
-
-    async getKeywordDetail(keyword: string, userId: string): Promise<any> {
-        if (!this.model) return null; // Changed from RapidAPI to model as it's used here
-
+    async getKeywordDetail(keyword, userId) {
+        if (!this.model)
+            return null;
         await this.deductCredits(userId, this.CREDIT_COSTS.KEYWORD_DISCOVERY, 'Chi tiết từ khóa');
-
         try {
             const prompt = `
             BẠN LÀ MỘT CHUYÊN GIA PHÂN TÍCH THỊ TRƯỜNG & CHIẾN LƯỢC TĂNG TRƯỞNG (GROWTH HACKER).
@@ -679,25 +659,22 @@ export class AiService implements OnModuleInit {
                 "market_insight": "Phân tích ngắn gọn về hành vi người dùng đối với từ khóa này"
             }
             `;
-
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
-
             const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-            if (!jsonMatch) return null;
-
+            if (!jsonMatch)
+                return null;
             return JSON.parse(jsonMatch[0]);
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Get Keyword Detail Error:", error);
             return null;
         }
     }
-
-    async evaluateAndImproveContent(content: string, platform: string, userId: string): Promise<any> {
-        if (!this.model) return null;
-
+    async evaluateAndImproveContent(content, platform, userId) {
+        if (!this.model)
+            return null;
         await this.deductCredits(userId, this.CREDIT_COSTS.CONTENT_EVALUATION, 'Đánh giá nội dung');
-
         try {
             const prompt = `
             BẠN LÀ MỘT CHUYÊN GIA BIÊN TẬP NỘI DUNG (CONTENT EDITOR & STRATEGIST).
@@ -724,108 +701,77 @@ export class AiService implements OnModuleInit {
                 "key_changes_explanation": "Giải thích tại sao phiên bản mới lại tốt hơn"
             }
             `;
-
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
             const cleanJson = responseText.replace(/```json|```/g, '').trim();
             return JSON.parse(cleanJson);
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Evaluate Content Error:", error.message);
             throw new Error('Lỗi khi đánh giá nội dung: ' + error.message);
         }
     }
-
-    private async trackUsage(serviceId: string) {
+    async trackUsage(serviceId) {
         try {
             const db = this.firebaseAdmin.firestore();
             const usageRef = db.collection('settings').doc('usage_stats');
-
-            // Increment usage
             await usageRef.set({
                 [serviceId]: admin.firestore.FieldValue.increment(1),
                 last_updated: admin.firestore.FieldValue.serverTimestamp()
             }, { merge: true });
-
-            // Check if limit exceeded (optional: we can just track here and check in methods)
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Error tracking usage:', error);
         }
     }
-
-    private async checkLimit(serviceId: string): Promise<boolean> {
+    async checkLimit(serviceId) {
         try {
             const db = this.firebaseAdmin.firestore();
             const usageDoc = await db.collection('settings').doc('usage_stats').get();
             const data = usageDoc.data();
-
             const current = data?.[serviceId] || 0;
-
-            // Get limits from settings/api_keys
             const limitsDoc = await db.collection('settings').doc('api_keys').get();
             const limits = limitsDoc.data()?.limits || {};
             const limit = limits[serviceId];
-
-            // If strict mode is NOT enabled, we never block
             if (!limits.strict_mode) {
                 return true;
             }
-
-            // If strict mode is ON, we only block if a limit is set and reached
             if (limit && current >= limit) {
                 return false;
             }
-
             return true;
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Error in checkLimit:', error);
-            return true; // Don't block on error
+            return true;
         }
     }
-
-    async generateContent(data: {
-        platform: string;
-        length?: string;
-        brand: string;
-        field: string;
-        features: string;
-        price: string;
-        offers: string;
-        mode?: string;
-        framework?: string;
-        tone?: string;
-        category?: string;
-        videoType?: string;
-    }, userId: string): Promise<any> {
+    async generateContent(data, userId) {
         if (!this.model) {
             throw new Error('Gemini API Key is not configured');
         }
-
         await this.deductCredits(userId, this.CREDIT_COSTS.SOCIAL_CONTENT, 'Viết nội dung');
-
         const isAllowed = await this.checkLimit('gemini');
         if (!isAllowed) {
             throw new Error('Hạn mức sử dụng Gemini đã hết. Vui lòng nâng cấp gói.');
         }
-
         await this.trackUsage('gemini');
-
         const { platform, length, brand, field, features, price, offers, mode, framework, tone, category, videoType } = data;
-
         let prompt = '';
-
         if (mode === 'affiliate_viral') {
-            // Thêm hướng dẫn chuyên biệt dựa trên videoType
             let typeInstruction = "";
             if (videoType === 'entertainment') {
                 typeInstruction = "Tập trung vào tính giải trí, nhịp điệu nhanh, các tình huống gây bất ngờ hoặc hài hước. Ưu tiên yếu tố viral và bắt trend.";
-            } else if (videoType === 'product') {
+            }
+            else if (videoType === 'product') {
                 typeInstruction = "Tập trung vào giải quyết nỗi đau của khách hàng, nêu bật USP (điểm bán hàng độc nhất) và có lời kêu gọi hành động (CTA) cực kỳ thuyết phục.";
-            } else if (videoType === 'educational') {
+            }
+            else if (videoType === 'educational') {
                 typeInstruction = "Cung cấp kiến thức giá trị, các bước thực hiện rõ ràng (Step-by-step). Giọng văn chuyên gia nhưng lôi cuốn, dễ hiểu.";
-            } else if (videoType === 'drama') {
+            }
+            else if (videoType === 'drama') {
                 typeInstruction = "Xây dựng tình huống kịch tính, có nút thắt và giải quyết vấn đề bằng một thông điệp truyền cảm hứng hoặc bài học ý nghĩa.";
             }
-
             prompt = `
             BẠN LÀ MỘT ĐẠO DIỄN SẢN XUẤT VIDEO VIRAL XUẤT SẮC.
             MỤC TIÊU: ${typeInstruction}
@@ -867,7 +813,8 @@ export class AiService implements OnModuleInit {
             - Luôn có đủ tất cả các nhãn yêu cầu trong từng phân cảnh.
             - Sử dụng ngôn ngữ ${tone === 'Gen Z' ? 'trẻ trung, slangs' : tone === 'Hài hước' ? 'vui nhộn, dí dỏm' : 'chuyên nghiệp'}.
             `;
-        } else if (mode === 'educational') {
+        }
+        else if (mode === 'educational') {
             prompt = `
             Hãy đóng vai một chuyên gia nội dung (Content Creator) và chuyên gia trong lĩnh vực ${category || field}. 
             Nhiệm vụ: Viết một bài chia sẻ kiến thức, giá trị hoặc lời khuyên chuyên sâu cho nền tảng ${platform.toUpperCase()} về chủ đề: "${features}".
@@ -888,7 +835,8 @@ export class AiService implements OnModuleInit {
             
             Chỉ trả về nội dung bài viết. PHẢI CÓ EMOJI VÀ KHÔNG CÓ DẤU SAO (*).
             `;
-        } else {
+        }
+        else {
             prompt = `
             Hãy đóng vai một chuyên gia Social Media Marketing hàng đầu toàn cầu. Hãy tạo một nội dung bài đăng cực kỳ bùng nổ và thu hút cho nền tảng ${platform.toUpperCase()}.
             
@@ -926,98 +874,78 @@ export class AiService implements OnModuleInit {
             Chỉ trả về nội dung bài viết.PHẢI CÓ EMOJI VÀ KHÔNG CÓ DẤU SAO(*).
             `;
         }
-
         const result = await this.model.generateContent(prompt);
         const response = await result.response;
         return { content: response.text() };
     }
-
-    async generateSpeech(data: { text: string; voice: string; speed: number }, userId: string): Promise<any> {
+    async generateSpeech(data, userId) {
         const apiKey = this.currentFptKey;
-
         if (!apiKey) {
             console.error('--- ERROR: FPT_AI_API_KEY is not configured ---');
             throw new Error('FPT.AI API Key is not configured');
         }
-
-        // Tính phí dựa trên độ dài văn bản: 10 credits cho mỗi 100 ký tự
         const charCount = data.text.length;
         const cost = Math.max(10, Math.ceil(charCount / 100) * this.CREDIT_COSTS.TTS_PER_100_CHARS);
         await this.deductCredits(userId, cost, 'Chuyển văn bản thành giọng nói');
-
         const isAllowed = await this.checkLimit('fpt');
         if (!isAllowed) {
             throw new Error('Hạn mức sử dụng FPT.AI đã hết. Vui lòng nâng cấp gói.');
         }
-
         await this.trackUsage('fpt');
-
         console.log(`-- - Calling FPT.AI TTS with voice: ${data.voice}, speed: ${data.speed} --- `);
-
         try {
-            const response = await axios.post(
-                'https://api.fpt.ai/hmi/tts/v5',
-                data.text,
-                {
-                    headers: {
-                        'api_key': apiKey,
-                        'voice': data.voice,
-                        'speed': data.speed.toString(),
-                    }
+            const response = await axios_1.default.post('https://api.fpt.ai/hmi/tts/v5', data.text, {
+                headers: {
+                    'api_key': apiKey,
+                    'voice': data.voice,
+                    'speed': data.speed.toString(),
                 }
-            );
-
+            });
             if (response.data && (response.data.async || response.data.url)) {
                 const audioUrl = response.data.async || response.data.url;
                 console.log('--- FPT.AI Success! Audio URL:', audioUrl, '---');
                 return { url: audioUrl };
-            } else {
+            }
+            else {
                 console.error('--- FPT.AI Response Data:', response.data, '---');
                 throw new Error('Không nhận được URL âm thanh từ FPT.AI');
             }
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Lỗi FPT.AI TTS:', error.response?.data || error.message);
             throw new Error('Lỗi khi gọi FPT.AI Speech API: ' + (error.response?.data?.message || error.message));
         }
     }
-
-    async downloadProxy(url: string) {
+    async downloadProxy(url) {
         try {
-            const response = await axios({
+            const response = await (0, axios_1.default)({
                 url,
                 method: 'GET',
                 responseType: 'stream',
             });
             return response;
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Lỗi khi proxy download:', error.message);
             throw new Error('Không thể tải file từ server nguồn');
         }
     }
-
-
-    async generateImageMockup(originalPrompt: string, productImage?: string, modelImage?: string, aspectRatio?: string, userId?: string): Promise<{ url: string }> {
+    async generateImageMockup(originalPrompt, productImage, modelImage, aspectRatio, userId) {
         if (userId) {
             await this.deductCredits(userId, this.CREDIT_COSTS.MOCKUP, 'Tạo Mockup AI');
         }
-
         try {
             console.log(`-- - Mockup Generation via Gemini 3 Flash(${aspectRatio || '1:1'})--- `);
-
-            // Map aspect ratio to Google SDK internal enum strings
-            const ratioMap: any = {
+            const ratioMap = {
                 '1:1': 'ASPECT_RATIO_1_1',
                 '16:9': 'ASPECT_RATIO_16_9',
                 '9:16': 'ASPECT_RATIO_9_16'
             };
             const googleRatio = ratioMap[aspectRatio || '1:1'] || 'ASPECT_RATIO_1_1';
-
-            // Bước 1: Gemini 3 Enhance Prompt (Tối ưu hóa chỉ thị hình ảnh)
             let enhancedPrompt = originalPrompt;
             const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
-
             try {
-                let promptParts: any[] = [
+                let promptParts = [
                     `Act as a world - class Visual Artist and Visual Clone Expert. 
                     Construct a high - precision prompt for an image generation agent.
             Idea: "${originalPrompt}".
@@ -1032,148 +960,118 @@ export class AiService implements OnModuleInit {
         7. Target Aspect Ratio: ${aspectRatio || '1:1'} (${aspectRatio === '9:16' ? 'Portrait' : aspectRatio === '16:9' ? 'Landscape' : 'Square'}).
         8. Output ONLY the English descriptive prompt focusing on the environment and product placement.Max 90 words.`
                 ];
-
                 if (productImage && productImage.includes('base64,')) {
                     promptParts.push({ inlineData: { data: productImage.split('base64,')[1], mimeType: "image/jpeg" } });
                 }
                 if (modelImage && modelImage.includes('base64,')) {
                     promptParts.push({ inlineData: { data: modelImage.split('base64,')[1], mimeType: "image/jpeg" } });
                 }
-
                 const result = await enhanceModel.generateContent(promptParts);
                 enhancedPrompt = result.response.text().replace(/[*"`]/g, '').trim();
                 console.log('--- Gemini 3 Enhanced Prompt:', enhancedPrompt);
-            } catch (e) {
+            }
+            catch (e) {
                 console.warn("Gemini 3 Enhance failed, using original:", e.message);
                 try {
                     const fallbackEnhance = this.model || this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
                     const fResult = await fallbackEnhance.generateContent(originalPrompt);
                     enhancedPrompt = fResult.response.text();
-                } catch (se) { }
+                }
+                catch (se) { }
             }
-
-            // Bước 2: Tạo ảnh (Ưu tiên các model hỗ trợ Image Gen tốt nhất)
             const googleModels = [
                 "gemini-2.5-flash-image",
                 "gemini-2.0-flash-exp",
                 "gemini-2.0-flash"
             ];
-
             for (const modelName of googleModels) {
-                // Thử tối đa 2 lần cho mỗi model nếu gặp lỗi Quota (429)
                 for (let attempt = 1; attempt <= 2; attempt++) {
                     try {
                         console.log(`--- Trying Model: ${modelName} (Attempt ${attempt}) ---`);
                         const imgModel = this.genAI.getGenerativeModel({ model: modelName });
-
-                        // Xây dựng input đa phương thức cho trình tạo ảnh
-                        const finalParts: any[] = [
+                        const finalParts = [
                             { text: enhancedPrompt }
                         ];
-
                         if (productImage && productImage.includes('base64,')) {
                             finalParts.push({ inlineData: { data: productImage.split('base64,')[1], mimeType: "image/jpeg" } });
                         }
                         if (modelImage && modelImage.includes('base64,')) {
                             finalParts.push({ inlineData: { data: modelImage.split('base64,')[1], mimeType: "image/jpeg" } });
                         }
-
-                        // Gọi AI - Loại bỏ aspect_ratio khỏi config vì gây lỗi 400
                         const result = await imgModel.generateContent({
                             contents: [{ role: 'user', parts: finalParts }]
                         });
                         const candidates = result.response.candidates;
-
                         if (candidates && candidates.length > 0 && candidates[0].content.parts.length > 0) {
                             const imagePart = candidates[0].content.parts.find(part => part.inlineData);
                             if (imagePart && imagePart.inlineData) {
                                 const base64Image = imagePart.inlineData.data;
                                 const mimeType = imagePart.inlineData.mimeType || 'image/jpeg';
                                 console.log(`--- Success with: ${modelName} ---`);
-
-                                // Giải quyết lỗi Firestore 1MB: Tải lên Cloud Storage thay vì lưu base64
                                 try {
                                     const storageUrl = await this.uploadBase64ToStorage(base64Image, mimeType, userId);
                                     if (storageUrl) {
                                         return { url: storageUrl };
                                     }
-                                } catch (storageErr) {
+                                }
+                                catch (storageErr) {
                                     console.warn("Storage upload failed, falling back to base64:", storageErr.message);
                                 }
-
                                 return { url: `data:${mimeType};base64,${base64Image}` };
-                            } else {
+                            }
+                            else {
                                 console.log(`--- Model ${modelName} returned text instead of image:`, result.response.text().substring(0, 100));
                             }
                         }
-                    } catch (err) {
+                    }
+                    catch (err) {
                         const isRateLimit = err.message?.includes('429') || err.message?.includes('exhausted');
                         console.warn(`Model ${modelName} error:`, err.message);
-
                         if (isRateLimit && attempt === 1) {
                             console.log('--- Quota hit, waiting 2.5s before retry... ---');
                             await new Promise(r => setTimeout(r, 2500));
                             continue;
                         }
-                        break; // Chuyển sang model tiếp theo
+                        break;
                     }
                 }
             }
-
             throw new Error('Dịch vụ Gemini 3 Image hiện đang bảo trì hoặc chưa hỗ trợ vùng này.');
-
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Gemini 3 Mockup Error:", error.message);
             throw new Error('Không thể tạo ảnh bằng Gemini 3. Vui lòng thử lại sau giây lát!');
         }
     }
-
-    /**
-     * Tải ảnh Base64 lên Firebase Storage để tránh lỗi lưu trữ Firestore 1MB
-     */
-    private async uploadBase64ToStorage(base64Data: string, mimeType: string, userId?: string): Promise<string | null> {
+    async uploadBase64ToStorage(base64Data, mimeType, userId) {
         try {
             const bucket = this.firebaseAdmin.storage().bucket('marketos-9b845.firebasestorage.app');
-            const fileName = `ai_results/${userId || 'guest'}/${uuidv4()}.jpg`;
+            const fileName = `ai_results/${userId || 'guest'}/${(0, uuid_1.v4)()}.jpg`;
             const file = bucket.file(fileName);
-
             const buffer = Buffer.from(base64Data, 'base64');
-
             await file.save(buffer, {
                 metadata: {
                     contentType: mimeType,
                     cacheControl: 'public, max-age=31536000',
                 },
-                public: true // Thử đặt public nếu bucket cho phép
+                public: true
             });
-
-            // Nếu không thể đặt public mặc định, tạo Signed URL với thời hạn dài (99 năm)
             const [url] = await file.getSignedUrl({
                 action: 'read',
                 expires: '12-31-2099'
             });
-
             return url;
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Lỗi upload Storage:", error.message);
             return null;
         }
     }
-
-    async generateMarketingPlan(data: {
-        productName: string;
-        description: string;
-        targetAudience: string;
-        goal: string;
-        budget?: string;
-        duration: string;
-    }, userId: string): Promise<any> {
+    async generateMarketingPlan(data, userId) {
         if (!this.model) {
             throw new Error('Gemini API Key is not configured');
         }
-
         await this.deductCredits(userId, this.CREDIT_COSTS.MARKETING_PLAN, 'Lên kế hoạch marketing');
-
         const prompt = `
         Bạn là Chuyên gia Chiến lược Marketing hàng đầu Việt Nam với 15 năm kinh nghiệm.
         Hãy tạo một Kế hoạch Marketing chi tiết, khả thi và sáng tạo cho dự án sau:
@@ -1223,45 +1121,30 @@ export class AiService implements OnModuleInit {
 
         BẮT ĐẦU TẠO KẾ HOẠCH NGAY!
         `;
-
-
         try {
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
-
-            // Clean markdown if present
             const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
-
             return JSON.parse(cleanJson);
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Lỗi khi tạo Marketing Plan:", error);
             throw new Error("Không thể tạo kế hoạch. Vui lòng thử lại.");
         }
     }
-
-    async scrapeProductData(url: string, userId: string): Promise<any> {
+    async scrapeProductData(url, userId) {
         if (!this.model) {
             throw new Error('Gemini API Key is not configured');
         }
-
         await this.deductCredits(userId, this.CREDIT_COSTS.PRODUCT_SCRAPER, 'Cào dữ liệu sản phẩm');
-
         try {
             console.log(`--- Scraping Product from: ${url} (Using ScrapingBee: ${!!this.currentScrapingBeeKey}) ---`);
-
             let html = '';
-
             if (this.currentScrapingBeeKey) {
                 const apiKey = this.currentScrapingBeeKey.trim();
-
-                // Chiến thuật 3 bước:
-                // 1. Thử ScrapingBee với URL gốc
-                // 2. Nếu lỗi, thử ScrapingBee với URL làm sạch
-                // 3. Nếu vẫn lỗi, dùng Fallback trực tiếp
-
                 try {
                     console.log(`--- ScrapingBee Stage 1 (Original URL): ${url.substring(0, 100)}... ---`);
-                    const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+                    const sbResponse = await axios_1.default.get('https://app.scrapingbee.com/api/v1', {
                         params: {
                             'api_key': apiKey,
                             'url': url,
@@ -1273,11 +1156,12 @@ export class AiService implements OnModuleInit {
                         timeout: 60000
                     });
                     html = sbResponse.data;
-                } catch (err1) {
+                }
+                catch (err1) {
                     console.warn("--- ScrapingBee Stage 1 Failed, trying Stage 2 (Clean URL) ---");
                     try {
                         let cleanUrl = url.split('?')[0];
-                        const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+                        const sbResponse = await axios_1.default.get('https://app.scrapingbee.com/api/v1', {
                             params: {
                                 'api_key': apiKey,
                                 'url': cleanUrl,
@@ -1289,9 +1173,10 @@ export class AiService implements OnModuleInit {
                             timeout: 60000
                         });
                         html = sbResponse.data;
-                    } catch (err2) {
+                    }
+                    catch (err2) {
                         console.warn("--- ScrapingBee Stage 2 Failed, using Direct Fallback ---");
-                        const fallbackResponse = await axios.get(url, {
+                        const fallbackResponse = await axios_1.default.get(url, {
                             headers: {
                                 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
                                 'Accept-Language': 'vi-VN,vi;q=0.9',
@@ -1301,9 +1186,9 @@ export class AiService implements OnModuleInit {
                         html = fallbackResponse.data;
                     }
                 }
-            } else {
-                // Fallback khi không có key ScrapingBee
-                const response = await axios.get(url, {
+            }
+            else {
+                const response = await axios_1.default.get(url, {
                     headers: {
                         'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
                         'Accept-Language': 'vi-VN,vi;q=0.9',
@@ -1312,66 +1197,48 @@ export class AiService implements OnModuleInit {
                 });
                 html = response.data;
             }
-
             console.log(`--- HTML Captured (Length: ${html.length}) ---`);
-
-            // 1. Trích xuất Tiêu đề
             const title = html.match(/<title>(.*?)<\/title>/)?.[1] || "";
             console.log(`--- Product Title: ${title} ---`);
-
-            // 2. Trích xuất Ảnh "Chính chủ" (Tránh quét rác toàn trang)
-            let productImages: string[] = [];
+            let productImages = [];
             let videoCoverId = "";
-
-            // Tìm thông tin video để loại bỏ ảnh bìa video
             const videoMatch = html.match(/"video_id":\s*"(.*?)"/);
             const coverMatch = html.match(/"cover":\s*"(.*?)"/);
-            if (coverMatch) videoCoverId = coverMatch[1];
-
-            // Tìm mảng images: "images":["id1", "id2", ...]
+            if (coverMatch)
+                videoCoverId = coverMatch[1];
             const imagesMatch = html.match(/"images":\s*\[\s*"(.*?)"\s*\]/);
             if (imagesMatch) {
                 const imageIds = imagesMatch[1].split('","');
                 productImages = imageIds
-                    .filter(id => id !== videoCoverId) // Loại bỏ ảnh bìa video
+                    .filter(id => id !== videoCoverId)
                     .map(id => `https://down-vn.img.susercontent.com/file/${id}`);
                 console.log(`--- Found ${productImages.length} official product images ---`);
             }
-
-            // Fallback nếu không thấy JSON (quét regex nhưng cực khắt khe)
             if (productImages.length === 0) {
                 const imageRegex = /https?:\/\/(?:down-vn\.img\.susercontent\.com|cf\.shopee\.vn)\/file\/[a-zA-Z0-9\-_]+/gi;
                 productImages = Array.from(new Set(html.match(imageRegex) || []))
                     .filter(img => {
-                        const low = img.toLowerCase();
-                        return !low.includes('play') && !low.includes('video') &&
-                            !low.includes('overlay') && !low.includes('template') &&
-                            !low.includes('banner');
-                    })
+                    const low = img.toLowerCase();
+                    return !low.includes('play') && !low.includes('video') &&
+                        !low.includes('overlay') && !low.includes('template') &&
+                        !low.includes('banner');
+                })
                     .map(img => img.includes('_tn') ? img.split('_tn')[0] : img);
             }
-
-            const cleanImages = productImages.slice(0, 12); // Lấy tối đa 12 ảnh để AI chọn lọc
-
-            // 3. Trích xuất các khối Script "Vàng" chứa thông tin chi tiết
+            const cleanImages = productImages.slice(0, 12);
             const scriptsWithState = html.match(/<script.*?>([\s\S]*?)<\/script>/g)
-                ?.filter((s: string) =>
-                    s.includes('item_id') ||
-                    s.includes('price') ||
-                    s.includes('description') ||
-                    s.includes('models') ||
-                    s.includes('shop_id') ||
-                    s.includes('attributes')
-                )
-                .map((s: string) => s.replace(/<script.*?>|<\/script>/g, '').trim())
+                ?.filter((s) => s.includes('item_id') ||
+                s.includes('price') ||
+                s.includes('description') ||
+                s.includes('models') ||
+                s.includes('shop_id') ||
+                s.includes('attributes'))
+                .map((s) => s.replace(/<script.*?>|<\/script>/g, '').trim())
                 .join("\n")
                 .substring(0, 30000) || "";
-
-            // 4. Tìm kiếm JSON-LD (Thường chứa giá và mô tả chuẩn SEO)
             const jsonLds = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/g)
-                ?.map((s: string) => s.replace(/<script .*?>|<\/script>/g, ''))
+                ?.map((s) => s.replace(/<script .*?>|<\/script>/g, ''))
                 .join("\n") || "";
-
             const prompt = `
             Bạn là AI chuyên gia bóc tách dữ liệu Shopee. Hãy trả về thông tin SẠCH.
             
@@ -1405,35 +1272,23 @@ export class AiService implements OnModuleInit {
                 }
             }
             `;
-
             console.log("--- Analyzing with Gemini (Advanced Extraction) ---");
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
             const cleanJson = responseText.replace(/```json|```/g, '').trim();
             console.log("--- Process Complete ---");
-
             return JSON.parse(cleanJson);
-
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Lỗi hệ thống cào dữ liệu:", error.message);
-            throw new InternalServerErrorException("hệ thống đang quá tải vui lòng thử lại sau ít phút");
+            throw new common_1.InternalServerErrorException("hệ thống đang quá tải vui lòng thử lại sau ít phút");
         }
     }
-
-    async generateVideoScript(data: {
-        productName: string;
-        brand: string;
-        description: string;
-        vibe: string;
-        ratio: string;
-        duration: string;
-    }, userId: string): Promise<any> {
+    async generateVideoScript(data, userId) {
         if (!this.model) {
             throw new Error('Gemini API Key is not configured');
         }
-
         await this.deductCredits(userId, this.CREDIT_COSTS.SOCIAL_CONTENT, 'Tạo kịch bản video');
-
         const prompt = `
         Bạn là Đạo diễn hình ảnh và Chuyên gia Creative Marketing. 
         Hãy tạo một kịch bản Storyboard chi tiết cho một video quảng cáo sản phẩm đỉnh cao.
@@ -1471,27 +1326,23 @@ export class AiService implements OnModuleInit {
 
         BẮT ĐẦU TẠO STORYBOARD!
         `;
-
         try {
             const result = await this.model.generateContent(prompt);
             const responseText = result.response.text();
             const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
             return JSON.parse(cleanJson);
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Lỗi khi tạo Video Script:", error);
             throw new Error("Không thể tạo kịch bản video. Vui lòng thử lại.");
         }
     }
-
-    async downloadUniversalVideo(url: string, userId: string): Promise<any> {
+    async downloadUniversalVideo(url, userId) {
         await this.deductCredits(userId, this.CREDIT_COSTS.VIDEO_DOWNLOAD, 'Tải video');
-
         const platform = this.detectPlatform(url);
-
-        // Nếu là TikTok hoặc Douyin, sử dụng TikWM cho ổn định và map lại format
         if (platform === 'TikTok' || platform === 'Douyin') {
             try {
-                const tikData = await this.downloadTikTokVideo(url, userId); // Pass userId
+                const tikData = await this.downloadTikTokVideo(url, userId);
                 return {
                     title: tikData.title || `Video ${platform}`,
                     thumbnail: tikData.cover || tikData.origin_cover,
@@ -1510,46 +1361,47 @@ export class AiService implements OnModuleInit {
                         }
                     ]
                 };
-            } catch (err) {
+            }
+            catch (err) {
                 console.warn(`TikWM failed for ${platform}, falling back to Cobalt:`, err.message);
             }
         }
-
-        // Tối ưu hóa link Facebook (Stories, Reels, Share)
         if (url.includes('facebook.com') || url.includes('fb.watch')) {
             try {
                 if (url.includes('/stories/')) {
                     const storyMatch = url.match(/\/stories\/(\d+)\/([^\/?]+)/);
-                    if (storyMatch) url = `https://www.facebook.com/stories/${storyMatch[1]}/${storyMatch[2]}/`;
-                } else if (url.includes('/reels/') || url.includes('/reel/')) {
-                    const reelMatch = url.match(/\/(?:reels|reel)\/([a-zA-Z0-9_-]+)/);
-                    if (reelMatch) url = `https://www.facebook.com/watch/?v=${reelMatch[1]}`;
-                } else if (url.includes('/share/v/')) {
-                    const shareMatch = url.match(/\/share\/v\/([^\/?]+)/);
-                    if (shareMatch) url = `https://www.facebook.com/watch/?v=${shareMatch[1]}`;
+                    if (storyMatch)
+                        url = `https://www.facebook.com/stories/${storyMatch[1]}/${storyMatch[2]}/`;
                 }
-
-                // Tránh tách query parameter nếu là link Facebook cần ?v=
+                else if (url.includes('/reels/') || url.includes('/reel/')) {
+                    const reelMatch = url.match(/\/(?:reels|reel)\/([a-zA-Z0-9_-]+)/);
+                    if (reelMatch)
+                        url = `https://www.facebook.com/watch/?v=${reelMatch[1]}`;
+                }
+                else if (url.includes('/share/v/')) {
+                    const shareMatch = url.match(/\/share\/v\/([^\/?]+)/);
+                    if (shareMatch)
+                        url = `https://www.facebook.com/watch/?v=${shareMatch[1]}`;
+                }
                 if (!url.includes('facebook.com/watch') && !url.includes('facebook.com/video.php') && url.includes('?')) {
                     url = url.split('?')[0];
                 }
                 console.log(`--- Optimized Facebook URL: ${url} ---`);
-            } catch (e) {
+            }
+            catch (e) {
                 console.warn('Error cleaning Facebook URL:', e.message);
             }
-
-            // Thử tải Facebook qua API chuyên biệt trước khi dùng Cobalt
             try {
                 console.log(`--- Trying Facebook-specific API for: ${url} ---`);
                 const fbApis = [
                     {
                         name: 'getmyfb',
                         url: 'https://getmyfb.com/process',
-                        getData: async (videoUrl: string) => {
+                        getData: async (videoUrl) => {
                             const params = new URLSearchParams();
                             params.append('id', videoUrl);
                             params.append('locale', 'en');
-                            const res = await axios.post('https://getmyfb.com/process', params, {
+                            const res = await axios_1.default.post('https://getmyfb.com/process', params, {
                                 headers: {
                                     'Content-Type': 'application/x-www-form-urlencoded',
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
@@ -1564,8 +1416,8 @@ export class AiService implements OnModuleInit {
                     {
                         name: 'fdown',
                         url: 'https://fdown.net/download.php',
-                        getData: async (videoUrl: string) => {
-                            const res = await axios.get(`https://fdown.net/download.php?URLz=${encodeURIComponent(videoUrl)}`, {
+                        getData: async (videoUrl) => {
+                            const res = await axios_1.default.get(`https://fdown.net/download.php?URLz=${encodeURIComponent(videoUrl)}`, {
                                 headers: {
                                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
                                     'Referer': 'https://fdown.net/',
@@ -1576,14 +1428,11 @@ export class AiService implements OnModuleInit {
                         }
                     }
                 ];
-
                 for (const api of fbApis) {
                     try {
                         console.log(`Trying Facebook API: ${api.name}`);
                         const html = await api.getData(url);
                         const htmlStr = typeof html === 'string' ? html : JSON.stringify(html);
-
-                        // Tìm link HD và SD từ HTML response
                         const hdMatch = htmlStr.match(/href="(https?:\/\/[^"]*?)"[^>]*>.*?HD/i)
                             || htmlStr.match(/id="hdlink"[^>]*href="([^"]+)"/i)
                             || htmlStr.match(/"hd_src":"([^"]+)"/i)
@@ -1592,16 +1441,15 @@ export class AiService implements OnModuleInit {
                             || htmlStr.match(/id="sdlink"[^>]*href="([^"]+)"/i)
                             || htmlStr.match(/"sd_src":"([^"]+)"/i)
                             || htmlStr.match(/SD Quality.*?href="(https?:\/\/[^"]+)"/is);
-
                         const hdUrl = hdMatch ? hdMatch[1].replace(/&amp;/g, '&') : null;
                         const sdUrl = sdMatch ? sdMatch[1].replace(/&amp;/g, '&') : null;
-
                         if (hdUrl || sdUrl) {
                             console.log(`--- Facebook video found via ${api.name} ---`);
-                            const quality: any[] = [];
-                            if (hdUrl) quality.push({ label: 'Chất lượng cao (HD)', url: hdUrl, type: 'video' });
-                            if (sdUrl) quality.push({ label: 'Chất lượng thường (SD)', url: sdUrl, type: 'video' });
-
+                            const quality = [];
+                            if (hdUrl)
+                                quality.push({ label: 'Chất lượng cao (HD)', url: hdUrl, type: 'video' });
+                            if (sdUrl)
+                                quality.push({ label: 'Chất lượng thường (SD)', url: sdUrl, type: 'video' });
                             return {
                                 title: `Video Facebook`,
                                 thumbnail: 'https://placehold.co/600x400/1877F2/FFFFFF/png?text=Facebook+Video',
@@ -1610,46 +1458,35 @@ export class AiService implements OnModuleInit {
                                 quality: quality
                             };
                         }
-                    } catch (fbErr) {
+                    }
+                    catch (fbErr) {
                         console.warn(`Facebook API ${api.name} failed:`, fbErr.message);
                     }
                 }
                 console.warn('All Facebook-specific APIs failed or returned no direct links, falling back to RapidAPI...');
-            } catch (err) {
+            }
+            catch (err) {
                 console.warn('Facebook specific API logic failed:', err.message);
             }
         }
-
-        // Sử dụng RapidAPI Social Download All In One cho tất cả nền tảng (trừ TikTok đã xử lý ở trên)
         try {
             console.log(`--- Fetching via RapidAPI Social Download All In One: ${url} ---`);
-
-            // Tầng 1: RapidAPI - Social Download All In One (nếu có key)
             if (this.currentRapidApiKey) {
                 try {
-                    const rapidApiResponse = await axios.post(
-                        'https://social-download-all-in-one.p.rapidapi.com/v1/social/autolink',
-                        { url: url },
-                        {
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'x-rapidapi-key': this.currentRapidApiKey,
-                                'x-rapidapi-host': 'social-download-all-in-one.p.rapidapi.com'
-                            },
-                            timeout: 25000
-                        }
-                    );
-
+                    const rapidApiResponse = await axios_1.default.post('https://social-download-all-in-one.p.rapidapi.com/v1/social/autolink', { url: url }, {
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'x-rapidapi-key': this.currentRapidApiKey,
+                            'x-rapidapi-host': 'social-download-all-in-one.p.rapidapi.com'
+                        },
+                        timeout: 25000
+                    });
                     const data = rapidApiResponse.data;
                     console.log('RapidAPI response status:', data?.status);
-
                     if (data) {
-                        // Trích xuất download links từ response
-                        let quality: any[] = [];
-
-                        // Xử lý medias array (format phổ biến nhất)
+                        let quality = [];
                         if (data.medias && Array.isArray(data.medias)) {
-                            data.medias.forEach((media: any, idx: number) => {
+                            data.medias.forEach((media, idx) => {
                                 if (media.url) {
                                     quality.push({
                                         label: media.quality
@@ -1661,8 +1498,6 @@ export class AiService implements OnModuleInit {
                                 }
                             });
                         }
-
-                        // Xử lý url trực tiếp
                         if (quality.length === 0 && data.url) {
                             quality.push({
                                 label: 'Tải Video (Chất lượng gốc)',
@@ -1670,10 +1505,8 @@ export class AiService implements OnModuleInit {
                                 type: 'video'
                             });
                         }
-
-                        // Xử lý links array (format khác)
                         if (quality.length === 0 && data.links && Array.isArray(data.links)) {
-                            data.links.forEach((link: any, idx: number) => {
+                            data.links.forEach((link, idx) => {
                                 const linkUrl = link.link || link.url;
                                 if (linkUrl) {
                                     quality.push({
@@ -1684,16 +1517,11 @@ export class AiService implements OnModuleInit {
                                 }
                             });
                         }
-
                         if (quality.length > 0) {
-                            // Lọc bỏ lựa chọn "HD No Watermark" cho Douyin theo yêu cầu người dùng
                             if (platform === 'Douyin') {
-                                quality = quality.filter(q =>
-                                    !q.label.toLowerCase().includes('hd no watermark') &&
-                                    !q.label.toLowerCase().includes('hd no water mark')
-                                );
+                                quality = quality.filter(q => !q.label.toLowerCase().includes('hd no watermark') &&
+                                    !q.label.toLowerCase().includes('hd no water mark'));
                             }
-
                             console.log(`--- RapidAPI success! Found ${quality.length} download links ---`);
                             return {
                                 title: data.title || `Video ${platform}`,
@@ -1705,19 +1533,19 @@ export class AiService implements OnModuleInit {
                         }
                     }
                     console.warn('RapidAPI returned no valid links, trying fallback...');
-                } catch (rapidErr) {
+                }
+                catch (rapidErr) {
                     console.warn('RapidAPI Social Download failed:', rapidErr.response?.data || rapidErr.message);
                 }
-            } else {
+            }
+            else {
                 console.warn('No RapidAPI key configured, skipping RapidAPI tier...');
             }
-
-            // Tầng 2: API miễn phí - ssyoutube / saveform
             const freeApis = [
                 {
                     name: 'SaveFrom',
                     request: async () => {
-                        return await axios.get(`https://api.savefrom.biz/api/convert`, {
+                        return await axios_1.default.get(`https://api.savefrom.biz/api/convert`, {
                             params: { url: url },
                             headers: {
                                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
@@ -1727,31 +1555,28 @@ export class AiService implements OnModuleInit {
                     }
                 }
             ];
-
             for (const api of freeApis) {
                 try {
                     console.log(`Trying free API: ${api.name}`);
                     const res = await api.request();
                     const htmlOrData = res.data;
                     const htmlStr = typeof htmlOrData === 'string' ? htmlOrData : JSON.stringify(htmlOrData);
-
-                    // Tìm link download từ response
-                    const videoLinks: string[] = [];
+                    const videoLinks = [];
                     const linkRegex = /href="(https?:\/\/[^"]*(?:\.mp4|\.webm|video)[^"]*?)"/gi;
                     let match;
                     while ((match = linkRegex.exec(htmlStr)) !== null && videoLinks.length < 5) {
                         videoLinks.push(match[1].replace(/&amp;/g, '&'));
                     }
-
-                    // Fallback: tìm download_url hoặc url trong JSON
                     if (videoLinks.length === 0 && typeof htmlOrData === 'object') {
-                        const findUrls = (obj: any): string[] => {
-                            const urls: string[] = [];
-                            if (!obj || typeof obj !== 'object') return urls;
+                        const findUrls = (obj) => {
+                            const urls = [];
+                            if (!obj || typeof obj !== 'object')
+                                return urls;
                             for (const key of Object.keys(obj)) {
                                 if ((key === 'url' || key === 'download_url' || key === 'link') && typeof obj[key] === 'string' && obj[key].startsWith('http')) {
                                     urls.push(obj[key]);
-                                } else if (typeof obj[key] === 'object') {
+                                }
+                                else if (typeof obj[key] === 'object') {
                                     urls.push(...findUrls(obj[key]));
                                 }
                             }
@@ -1759,7 +1584,6 @@ export class AiService implements OnModuleInit {
                         };
                         videoLinks.push(...findUrls(htmlOrData));
                     }
-
                     if (videoLinks.length > 0) {
                         console.log(`--- ${api.name} success! Found ${videoLinks.length} links ---`);
                         return {
@@ -1774,22 +1598,20 @@ export class AiService implements OnModuleInit {
                             }))
                         };
                     }
-                } catch (freeErr) {
+                }
+                catch (freeErr) {
                     console.warn(`Free API ${api.name} failed:`, freeErr.message);
                 }
             }
-
-            // Tầng 3: Cobalt API (Dự phòng cuối cùng cực mạnh)
             try {
                 console.log(`--- Falling back to Cobalt: ${url} ---`);
                 const cobaltMirrors = [
                     'https://api.cobalt.tools/api/json',
                     'https://cobalt.tools/api/json'
                 ];
-
                 for (const mirror of cobaltMirrors) {
                     try {
-                        const cobaltRes = await axios.post(mirror, {
+                        const cobaltRes = await axios_1.default.post(mirror, {
                             url: url,
                             videoQuality: '1080',
                         }, {
@@ -1800,7 +1622,6 @@ export class AiService implements OnModuleInit {
                             },
                             timeout: 15000
                         });
-
                         if (cobaltRes.data && cobaltRes.data.url) {
                             console.log(`--- Cobalt success via ${mirror} ---`);
                             return {
@@ -1809,80 +1630,77 @@ export class AiService implements OnModuleInit {
                                 source: new URL(url).hostname,
                                 platform: platform,
                                 quality: [{
-                                    label: 'Chất lượng cao nhất',
-                                    url: cobaltRes.data.url,
-                                    type: 'video'
-                                }]
+                                        label: 'Chất lượng cao nhất',
+                                        url: cobaltRes.data.url,
+                                        type: 'video'
+                                    }]
                             };
                         }
-                    } catch (mErr) {
+                    }
+                    catch (mErr) {
                         console.warn(`Mirror ${mirror} failed:`, mErr.message);
                     }
                 }
-            } catch (cobaltErr) {
+            }
+            catch (cobaltErr) {
                 console.warn('All Cobalt attempts failed:', cobaltErr.message);
             }
-
-            throw new BadRequestException(
-                `Không thể tải video từ ${platform}. Nền tảng này có thể đang hạn chế truy cập hoặc link không hợp lệ.`
-            );
-
-        } catch (error) {
+            throw new common_1.BadRequestException(`Không thể tải video từ ${platform}. Nền tảng này có thể đang hạn chế truy cập hoặc link không hợp lệ.`);
+        }
+        catch (error) {
             console.error('Final Download Error:', error.response?.data || error.message);
-            if (error instanceof BadRequestException) throw error;
-            throw new BadRequestException(
-                `Không thể tải video từ ${platform}. Vui lòng kiểm tra lại link hoặc thử sau.`
-            );
+            if (error instanceof common_1.BadRequestException)
+                throw error;
+            throw new common_1.BadRequestException(`Không thể tải video từ ${platform}. Vui lòng kiểm tra lại link hoặc thử sau.`);
         }
     }
-
-    private detectPlatform(url: string): string {
+    detectPlatform(url) {
         try {
             const urlStr = url.toLowerCase();
-            if (urlStr.includes('youtube.com') || urlStr.includes('youtu.be')) return 'Youtube';
-            if (urlStr.includes('facebook.com/reels') || urlStr.includes('facebook.com/reel')) return 'Facebook Reels';
-            if (urlStr.includes('facebook.com') || urlStr.includes('fb.watch')) return 'Facebook';
-            if (urlStr.includes('instagram.com')) return 'Instagram';
-            if (urlStr.includes('tiktok.com')) return 'TikTok';
-            if (urlStr.includes('douyin.com')) return 'Douyin';
-            if (urlStr.includes('twitter.com') || urlStr.includes('x.com')) return 'Twitter/X';
+            if (urlStr.includes('youtube.com') || urlStr.includes('youtu.be'))
+                return 'Youtube';
+            if (urlStr.includes('facebook.com/reels') || urlStr.includes('facebook.com/reel'))
+                return 'Facebook Reels';
+            if (urlStr.includes('facebook.com') || urlStr.includes('fb.watch'))
+                return 'Facebook';
+            if (urlStr.includes('instagram.com'))
+                return 'Instagram';
+            if (urlStr.includes('tiktok.com'))
+                return 'TikTok';
+            if (urlStr.includes('douyin.com'))
+                return 'Douyin';
+            if (urlStr.includes('twitter.com') || urlStr.includes('x.com'))
+                return 'Twitter/X';
             return 'Website';
-        } catch {
+        }
+        catch {
             return 'Unknown';
         }
     }
-
-    async downloadTikTokVideo(url: string, userId: string): Promise<any> {
+    async downloadTikTokVideo(url, userId) {
         await this.deductCredits(userId, this.CREDIT_COSTS.VIDEO_DOWNLOAD, 'Tải video TikTok');
-
         try {
-            // Xử lý link Douyin linh hoạt hơn
             let cleanUrl = url.trim();
             if (cleanUrl.includes('douyin.com')) {
-                // Nếu là link dài www.douyin.com, TikWM có thể bị lỗi parsing
                 const match = cleanUrl.match(/\/video\/(\d+)/);
                 if (match && match[1]) {
-                    // Format iesdouyin thường ổn định hơn cho các API scraping
                     cleanUrl = `https://www.iesdouyin.com/share/video/${match[1]}/`;
                 }
-            } else {
+            }
+            else {
                 cleanUrl = cleanUrl.split('?')[0];
             }
-
             console.log(`--- Fetching via TikWM: ${cleanUrl} ---`);
-
             const params = new URLSearchParams();
             params.append('url', cleanUrl);
             params.append('hd', '1');
-
-            const response = await axios.post('https://www.tikwm.com/api/', params, {
+            const response = await axios_1.default.post('https://www.tikwm.com/api/', params, {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                     'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
                 },
                 timeout: 20000
             });
-
             if (response.data && response.data.code === 0) {
                 const data = response.data.data;
                 return {
@@ -1904,26 +1722,25 @@ export class AiService implements OnModuleInit {
                         download_count: data.download_count
                     }
                 };
-            } else {
-                console.error('TikWM Error:', response.data);
-                throw new BadRequestException(response.data?.msg || 'Không thể lấy dữ liệu TikTok/Douyin. Vui lòng kiểm tra lại đường dẫn video.');
             }
-        } catch (error) {
+            else {
+                console.error('TikWM Error:', response.data);
+                throw new common_1.BadRequestException(response.data?.msg || 'Không thể lấy dữ liệu TikTok/Douyin. Vui lòng kiểm tra lại đường dẫn video.');
+            }
+        }
+        catch (error) {
             console.error('Lỗi khi fetch TikTok:', error.message);
-            throw new BadRequestException('Không thể kết nối đến máy chủ tải video (TikWM). Vui lòng thử lại sau.');
+            throw new common_1.BadRequestException('Không thể kết nối đến máy chủ tải video (TikWM). Vui lòng thử lại sau.');
         }
     }
-
-    private async callTikWM(url: string, params: any, retryCount = 0, bypassCache = false): Promise<any> {
+    async callTikWM(url, params, retryCount = 0, bypassCache = false) {
         try {
             const cacheKey = `${url}_${JSON.stringify(params)}`;
             const cached = this.cache.get(cacheKey);
             if (!bypassCache && cached && (Date.now() - cached.timestamp < this.CACHE_TTL)) {
                 return cached.data;
             }
-
-            const response = await axios.get(url, { params, headers: { 'User-Agent': 'Mozilla/5.0' } });
-
+            const response = await axios_1.default.get(url, { params, headers: { 'User-Agent': 'Mozilla/5.0' } });
             if (response.data?.code === -1 && response.data?.msg?.includes('Limit hit')) {
                 if (retryCount < 3) {
                     const delay = (retryCount + 2) * 3000;
@@ -1933,12 +1750,12 @@ export class AiService implements OnModuleInit {
                 }
                 throw new Error('Hệ thống TikWM quá tải (Limit). Vui lòng đợi vài giây và thử lại.');
             }
-
             if (response.data) {
                 this.cache.set(cacheKey, { data: response.data, timestamp: Date.now() });
             }
             return response.data;
-        } catch (error) {
+        }
+        catch (error) {
             console.error('TikWM API Error:', error.message);
             if (retryCount < 3 && !error.message?.includes('Limit')) {
                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -1947,37 +1764,26 @@ export class AiService implements OnModuleInit {
             return null;
         }
     }
-
-    async analyzeTikTokChannel(uniqueId: string, userId: string): Promise<any> {
+    async analyzeTikTokChannel(uniqueId, userId) {
         await this.deductCredits(userId, this.CREDIT_COSTS.TIKTOK_ANALYTICS, 'Phân tích kênh TikTok');
-
-        const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
-
+        const delay = (ms) => new Promise(res => setTimeout(res, ms));
         try {
             console.log(`--- Analyzing TikTok Channel: ${uniqueId} ---`);
-
-            // Nếu có RapidAPI Key, sử dụng TikTok-API23 (Lundehund) - Ưu tiên vì cực kỳ ổn định
             if (this.currentRapidApiKey) {
                 console.log('--- Using TikTok-API23 (RapidAPI) for stability ---');
                 try {
-                    const response = await axios.get('https://tiktok-api23.p.rapidapi.com/api/user/info', {
+                    const response = await axios_1.default.get('https://tiktok-api23.p.rapidapi.com/api/user/info', {
                         params: { username: uniqueId.replace(/^@/, '') },
                         headers: {
                             'X-RapidAPI-Key': this.currentRapidApiKey,
                             'X-RapidAPI-Host': 'tiktok-api23.p.rapidapi.com'
                         }
                     });
-
                     if (response.data && response.data.user) {
                         const userData = response.data.user;
                         const stats = response.data.stats;
-
-                        // Lấy video bài đăng bằng UID numeric (quan trọng để API23 chạy ổn định)
                         const videos = await this.getTikTokUserVideos(uniqueId, userData.userId || userData.id);
-
-                        // AI Analysis based on fetched data
                         const aiReport = await this.generateTikTokAIAnalysis(userData, stats, videos);
-
                         return {
                             user: {
                                 id: userData.userId || userData.id,
@@ -2000,36 +1806,27 @@ export class AiService implements OnModuleInit {
                             aiAnalysis: aiReport
                         };
                     }
-                } catch (rapidErr) {
+                }
+                catch (rapidErr) {
                     console.error('RapidAPI Error:', rapidErr.message);
                 }
             }
-
-            // Fallback về TikWM nếu không có RapidAPI Key hoặc RapidAPI lỗi
-            // Làm sạch uniqueId nếu người dùng truyền vào cả link
             let cleanId = uniqueId.trim();
             if (cleanId.includes('tiktok.com')) {
                 const match = cleanId.match(/@([^/?#]+)/);
                 cleanId = match ? match[1] : (cleanId.split('/').pop() || '').replace('@', '');
             }
             cleanId = cleanId.replace(/^@/, '');
-
             const response = await this.callTikWM('https://www.tikwm.com/api/user/info', {
                 unique_id: cleanId
             });
-
             if (response && response.code === 0 && response.data) {
                 const data = response.data;
-                // Tăng độ trễ để tránh Limit 1 request/second của TikWM Free
                 await new Promise(resolve => setTimeout(resolve, 3100));
-
-                // TikWM có thể dùng sec_uid hoặc sec_uid tùy phiên bản/vùng
                 const secUid = data.user.secUid || data.user.sec_uid || data.user.sec_id;
                 const isPrivate = !!(data.user.privateItem || data.user.secret);
-
                 const videos = isPrivate ? [] : await this.getTikTokUserVideos(cleanId, secUid);
                 const aiReport = await this.generateTikTokAIAnalysis(data.user, data.stats, videos);
-
                 return {
                     user: {
                         id: data.user.id || data.user.user_id,
@@ -2048,15 +1845,15 @@ export class AiService implements OnModuleInit {
                         videoCount: data.stats.videoCount || data.stats.video_count || 0,
                         diggCount: data.stats.diggCount || data.stats.digg_count || 0
                     },
-                    isPrivate, // Thêm thông tin trạng thái riêng tư
+                    isPrivate,
                     topVideos: videos,
                     aiAnalysis: aiReport,
                     healthScore: this.calculateHealthScore(data.stats, videos)
                 };
             }
-
             throw new Error(response?.msg || 'Hệ thống TikWM đang bận hoặc ID không tồn tại.');
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Lỗi phân tích TikTok:', error.message);
             const msg = this.currentRapidApiKey
                 ? 'Lỗi kết nối API trả phí. Vui lòng kiểm tra lại hạn mức.'
@@ -2064,10 +1861,9 @@ export class AiService implements OnModuleInit {
             throw new Error(msg);
         }
     }
-
-    async generateTikTokAIAnalysis(user: any, stats: any, videos: any[], retryCount = 0): Promise<any> {
-        if (!this.model) return this.getDefaultAIAnalysis();
-
+    async generateTikTokAIAnalysis(user, stats, videos, retryCount = 0) {
+        if (!this.model)
+            return this.getDefaultAIAnalysis();
         const prompt = `Bạn là một chuyên gia phân tích dữ liệu TikTok bậc thầy. Hãy phân tích kênh sau:
         - Nickname: ${user.nickname} (@${user.uniqueId})
         - Bio: ${user.signature || 'Chưa có'}
@@ -2087,31 +1883,25 @@ export class AiService implements OnModuleInit {
           "whyViral": "Phân tích vì sao nội dung hấp dẫn người xem",
           "suggestions": ["Gợi ý 1", "Gợi ý 2"]
         }`;
-
         try {
             const result = await this.model.generateContent(prompt);
             const response = await result.response;
             const text = response.text();
-
-            // Tìm và bóc tách đoạn JSON trong trường hợp AI trả kèm Markdown
             const jsonMatch = text.match(/\{[\s\S]*\}/);
             const jsonStr = jsonMatch ? jsonMatch[0] : text;
             return JSON.parse(jsonStr);
-        } catch (error) {
+        }
+        catch (error) {
             console.error(`Lỗi AI Analysis (Lần ${retryCount + 1}):`, error.message);
-
-            // Nếu lỗi 503 hoặc 429 thì thử lại sau vài giây
             if ((error.message?.includes('503') || error.message?.includes('429')) && retryCount < 2) {
                 const waitTime = (retryCount + 1) * 3000;
                 await new Promise(resolve => setTimeout(resolve, waitTime));
                 return this.generateTikTokAIAnalysis(user, stats, videos, retryCount + 1);
             }
-
             return this.getDefaultAIAnalysis();
         }
     }
-
-    private getDefaultAIAnalysis() {
+    getDefaultAIAnalysis() {
         return {
             category: "Tổng hợp nội dung",
             status: "STABLE",
@@ -2122,14 +1912,11 @@ export class AiService implements OnModuleInit {
             suggestions: ["Cần đăng bài đều đặn hơn", "Tương tác với người xem trong comment"]
         };
     }
-
-    async getTikTokUserVideos(uniqueId: string, userIdOrSecUid?: string): Promise<any> {
+    async getTikTokUserVideos(uniqueId, userIdOrSecUid) {
         const cleanId = uniqueId.replace(/^@/, '');
-
-        // Ưu tiên TikTok-API23 (Lundehund) nếu có Key
         if (this.currentRapidApiKey) {
             try {
-                const response = await axios.get('https://tiktok-api23.p.rapidapi.com/api/user/posts', {
+                const response = await axios_1.default.get('https://tiktok-api23.p.rapidapi.com/api/user/posts', {
                     params: {
                         user_id: userIdOrSecUid,
                         count: 10,
@@ -2140,9 +1927,8 @@ export class AiService implements OnModuleInit {
                         'X-RapidAPI-Host': 'tiktok-api23.p.rapidapi.com'
                     }
                 });
-
                 if (response.data && response.data.videos) {
-                    return response.data.videos.map((v: any) => ({
+                    return response.data.videos.map((v) => ({
                         id: v.videoId,
                         title: v.desc,
                         cover: v.cover,
@@ -2153,68 +1939,53 @@ export class AiService implements OnModuleInit {
                         create_time: v.createTime
                     }));
                 }
-            } catch (err) {
+            }
+            catch (err) {
                 console.error('API23 Posts Error:', err.message);
             }
         }
-
-        // Bước tiếp theo: Fallback về Search API của TikWM
         try {
             const response = await this.callTikWM('https://www.tikwm.com/api/feed/search', {
                 keywords: `@${cleanId}`,
-                count: 30 // Lấy nhiều hơn để lọc chính xác nhất
+                count: 30
             });
-
             if (response && response.code === 0 && response.data) {
-                // TikWM search có thể trả về array trực tiếp hoặc object chứa videos
                 const videos = Array.isArray(response.data) ? response.data : (response.data.videos || []);
-
-                // Đồng bộ cấu trúc và lọc chỉ lấy video của đúng chủ kênh
                 const mappedVideos = videos
-                    .filter((v: any) => v.author?.unique_id === cleanId || v.author?.uniqueId === cleanId)
-                    .map((v: any) => ({
-                        id: v.video_id,
-                        title: v.title,
-                        cover: v.cover,
-                        play_count: v.play_count || 0,
-                        digg_count: v.digg_count || 0,
-                        comment_count: v.comment_count || 0,
-                        share_count: v.share_count || 0,
-                        create_time: v.create_time
-                    }));
-
-                return mappedVideos.sort((a: any, b: any) => (b.play_count || 0) - (a.play_count || 0)).slice(0, 10);
+                    .filter((v) => v.author?.unique_id === cleanId || v.author?.uniqueId === cleanId)
+                    .map((v) => ({
+                    id: v.video_id,
+                    title: v.title,
+                    cover: v.cover,
+                    play_count: v.play_count || 0,
+                    digg_count: v.digg_count || 0,
+                    comment_count: v.comment_count || 0,
+                    share_count: v.share_count || 0,
+                    create_time: v.create_time
+                }));
+                return mappedVideos.sort((a, b) => (b.play_count || 0) - (a.play_count || 0)).slice(0, 10);
             }
-        } catch (e) {
+        }
+        catch (e) {
             console.error('TikWM Search Error:', e.message);
         }
-
         return [];
     }
-
-    private calculateHealthScore(stats: any, videos: any[]): number {
-        if (!stats || !videos.length) return 50;
-
+    calculateHealthScore(stats, videos) {
+        if (!stats || !videos.length)
+            return 50;
         const followers = stats.followerCount || stats.follower_count || 1;
         const avgViews = videos.reduce((acc, v) => acc + (v.play_count || 0), 0) / videos.length;
-
-        // Công thức tính score: (View trung bình / Follower) * trọng số + (Tốc độ ra video)
         let score = (avgViews / followers) * 100;
-
-        // Tối đa 100, tối thiểu 10
         score = Math.min(Math.max(score, 10), 100);
-
-        // Thưởng điểm nếu có video cực kỳ viral (>1M view)
-        if (videos.some(v => v.play_count > 1000000)) score += 15;
-
+        if (videos.some(v => v.play_count > 1000000))
+            score += 15;
         return Math.min(Math.round(score), 100);
     }
-
-    async generateTikTokVideoScript(uniqueId: string, niche: string, userId: string): Promise<any> {
-        if (!this.model) return null;
-
+    async generateTikTokVideoScript(uniqueId, niche, userId) {
+        if (!this.model)
+            return null;
         await this.deductCredits(userId, this.CREDIT_COSTS.TIKTOK_SCRIPT, 'Tạo kịch bản TikTok');
-
         const prompt = `Bạn là một chuyên gia sáng tạo nội dung (Content Creator) với 10 triệu followers trên TikTok.
         Dựa trên kênh TikTok @${uniqueId} thuộc lĩnh vực: ${niche}.
         Hãy tạo 1 kịch bản video ngắn (dưới 60s) có tiềm năng VIRAL cao.
@@ -2234,36 +2005,30 @@ export class AiService implements OnModuleInit {
           "caption": "Caption gợi ý",
           "hashtags": ["tag1", "tag2"]
         }`;
-
         try {
             const result = await this.model.generateContent(prompt);
             const text = result.response.text();
             const jsonMatch = text.match(/\{[\s\S]*\}/);
             return JSON.parse(jsonMatch ? jsonMatch[0] : text);
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Lỗi tạo kịch bản:', error);
             return null;
         }
     }
-
-    async getTikTokTrending(region = 'VN', count = 50, refresh = false, category?: string, userId?: string): Promise<any> {
+    async getTikTokTrending(region = 'VN', count = 50, refresh = false, category, userId) {
         try {
             if (userId) {
                 await this.deductCredits(userId, this.CREDIT_COSTS.TIKTOK_TRENDING, 'Xu hướng TikTok');
             }
-
-            // 1. Luôn lấy dữ liệu Trending TOÀN CẦU để thống kê âm nhạc (đảm bảo nhạc trend không bị lọc theo category)
             const globalTrending = await this.callTikWM('https://www.tikwm.com/api/feed/list', {
                 region: region,
                 count: 50
             }, 0, refresh);
-
             let trendingVideos = [];
             if (globalTrending && globalTrending.code === 0 && globalTrending.data) {
                 trendingVideos = Array.isArray(globalTrending.data) ? globalTrending.data : (globalTrending.data.videos || []);
             }
-
-            // 2. Lấy dữ liệu Video theo Category (nếu có) để hiển thị trong lưới video
             let displayVideos = trendingVideos;
             if (category && category !== 'all') {
                 const categoryResponse = await this.callTikWM('https://www.tikwm.com/api/feed/search', {
@@ -2272,33 +2037,28 @@ export class AiService implements OnModuleInit {
                     count: 50,
                     type: 1
                 }, 0, refresh);
-
                 if (categoryResponse && categoryResponse.code === 0 && categoryResponse.data) {
                     displayVideos = Array.isArray(categoryResponse.data) ? categoryResponse.data : (categoryResponse.data.videos || []);
                 }
             }
-
-            // 3. Thống kê Trending Sounds từ dữ liệu TOÀN CẦU (nhạc trend thực sự của TikTok)
             const soundMap = new Map();
-            trendingVideos.forEach((v: any) => {
+            trendingVideos.forEach((v) => {
                 if (v.music_info) {
                     const mid = v.music_info.id;
                     if (!soundMap.has(mid)) {
                         soundMap.set(mid, { ...v.music_info, count: 1 });
-                    } else {
+                    }
+                    else {
                         soundMap.get(mid).count += 1;
                     }
                 }
             });
-
             const trending_sounds = Array.from(soundMap.values())
                 .sort((a, b) => b.count - a.count)
                 .slice(0, 10);
-
-            // 4. Phân tích xu hướng bằng AI dựa trên displayVideos (video đang hiển thị)
             let insights = null;
             if (this.model && displayVideos.length > 0) {
-                const videoContext = displayVideos.slice(0, 15).map((v: any) => v.title).filter((t: any) => t).join('\n');
+                const videoContext = displayVideos.slice(0, 15).map((v) => v.title).filter((t) => t).join('\n');
                 const prompt = `Phân tích danh sách tiêu đề video xu hướng TikTok sau tại khu vực ${region}:
                 ${videoContext}
                 
@@ -2313,39 +2073,36 @@ export class AiService implements OnModuleInit {
                   "trend_summary": "Mô tả xu hướng hiện tại",
                   "advice": "Lời khuyên thực chiến"
                 }`;
-
                 try {
                     const result = await this.model.generateContent(prompt);
                     const text = result.response.text();
                     const jsonMatch = text.match(/\{[\s\S]*\}/);
                     insights = JSON.parse(jsonMatch ? jsonMatch[0] : text);
-                } catch (e) {
+                }
+                catch (e) {
                     console.error('Lỗi AI phân tích trend:', e);
                 }
             }
-
             return {
                 videos: displayVideos,
                 insights,
                 trending_sounds
             };
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Lỗi lấy trending TikTok:', error);
             return { videos: [], insights: null, trending_sounds: [] };
         }
     }
-    async generateLandingPage(userPrompt: string) {
+    async generateLandingPage(userPrompt) {
         if (!this.model) {
             throw new Error('Gemini API Key is not configured');
         }
-
         const isAllowed = await this.checkLimit('gemini');
         if (!isAllowed) {
             throw new Error('Hạn mức sử dụng Gemini đã hết. Vui lòng nâng cấp gói.');
         }
-
         await this.trackUsage('gemini');
-
         const systemPrompt = `
         BẠN LÀ MỘT DESIGNER LANDING PAGE CHUYÊN NGHIỆP TRÊN NỀN TẢNG PUCK EDITOR.
         Nhiệm vụ: Chuyển đổi yêu cầu của khách hàng thành cấu trúc JSON hoàn chỉnh để dựng trang web.
@@ -2385,152 +2142,122 @@ export class AiService implements OnModuleInit {
 
         HÃY TẠO MỘT TRANG ĐẦY ĐỦ CÁC KHỐI, KHÔNG ĐƯỢC CHỈ TẠO FOOTER. TRẢ VỀ DUY NHẤT JSON.
         `;
-
         try {
             const result = await this.model.generateContent(systemPrompt);
             const responseText = result.response.text();
-
-            // Tìm kiếm JSON trong phản hồi (đề phòng AI trả về text dư thừa)
             const jsonMatch = responseText.match(/\{[\s\S]*\}/);
             if (!jsonMatch) {
                 throw new Error("AI không trả về định dạng JSON hợp lệ");
             }
-
             const puckData = JSON.parse(jsonMatch[0].trim());
-
-            // ===== LỚP BẢO VỆ: Lọc duplicate components =====
-            // Các component section chỉ được xuất hiện 1 lần
             const UNIQUE_COMPONENTS = [
                 'Navbar', 'Hero', 'Features', 'Pricing', 'Testimonials',
                 'FAQ', 'CTA', 'Footer', 'Stats', 'Partners', 'Gallery',
                 'Process'
             ];
-            const seenTypes = new Set<string>();
-
+            const seenTypes = new Set();
             if (puckData.content && Array.isArray(puckData.content)) {
-                // Lọc các component bị trùng
-                puckData.content = puckData.content.filter((item: any) => {
-                    if (!item || !item.type) return false;
+                puckData.content = puckData.content.filter((item) => {
+                    if (!item || !item.type)
+                        return false;
                     if (UNIQUE_COMPONENTS.includes(item.type)) {
                         if (seenTypes.has(item.type)) {
                             console.log(`[AI Guard] Removed duplicate component: ${item.type}`);
-                            return false; // Bỏ qua component bị trùng
+                            return false;
                         }
                         seenTypes.add(item.type);
                     }
                     return true;
                 });
-
-                // Thêm ID duy nhất cho từng component (Puck yêu cầu)
-                puckData.content = puckData.content.map((item: any, index: number) => ({
+                puckData.content = puckData.content.map((item, index) => ({
                     ...item,
                     id: `ai-${item.type?.toLowerCase()}-${index}-${Date.now()}`,
                     props: {
                         ...(item.props || {}),
                     }
                 }));
-
                 console.log(`[AI] Generated ${puckData.content.length} unique components`);
             }
-
             return puckData;
-        } catch (error) {
+        }
+        catch (error) {
             console.error("Generate Landing Page Error:", error.message);
             throw new Error('Lỗi khi AI tạo Landing Page: ' + error.message);
         }
     }
-
-    private async extractAudioWithFFmpeg(videoPath: string, audioPath: string): Promise<void> {
+    async extractAudioWithFFmpeg(videoPath, audioPath) {
         return new Promise((resolve, reject) => {
             ffmpeg(videoPath)
                 .outputOptions([
-                    '-vn',
-                    '-ar 44100',
-                    '-ac 2',
-                    '-b:a 64k',
-                ])
+                '-vn',
+                '-ar 44100',
+                '-ac 2',
+                '-b:a 64k',
+            ])
                 .save(audioPath)
                 .on('end', () => resolve())
-                .on('error', (err: any) => reject(new Error('Lỗi trích xuất âm thanh: ' + err.message)));
+                .on('error', (err) => reject(new Error('Lỗi trích xuất âm thanh: ' + err.message)));
         });
     }
-
-    private async burnSubtitlesWithFFmpeg(videoPath: string, srtPath: string, outputPath: string, styleMode: string, fontSize?: number, yPos?: number): Promise<void> {
+    async burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, styleMode, fontSize, yPos) {
         return new Promise((resolve, reject) => {
             let styleArgs = '';
             const size = fontSize || (styleMode === 'tiktok' ? 26 : (styleMode === 'classic' ? 20 : 22));
-
-            // Handle style formatting
-            const marginV = Math.round((yPos || 80) * 0.1); // Simple fallback/scaling
-            const alignment = 8; // Top Center
-            const finalMarginV = Math.round((yPos || 80) * 10.8); // Scale 0-100 to approx 0-1080px (common height)
-
+            const marginV = Math.round((yPos || 80) * 0.1);
+            const alignment = 8;
+            const finalMarginV = Math.round((yPos || 80) * 10.8);
             if (styleMode === 'tiktok') {
                 styleArgs = `force_style='FontSize=${size},PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Bold=1,Alignment=8,MarginV=${finalMarginV}'`;
-            } else if (styleMode === 'classic') {
+            }
+            else if (styleMode === 'classic') {
                 styleArgs = `force_style='FontSize=${size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=1,BackColour=&H80000000,Alignment=8,MarginV=${finalMarginV}'`;
-            } else if (styleMode === 'dynamic') {
+            }
+            else if (styleMode === 'dynamic') {
                 styleArgs = `force_style='FontSize=${size},PrimaryColour=&H0000FF00,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=2,Bold=1,Italic=1,Alignment=8,MarginV=${finalMarginV}'`;
-            } else {
+            }
+            else {
                 styleArgs = `force_style='FontSize=${size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0,Alignment=8,MarginV=${finalMarginV}'`;
             }
-
             const safeSrtPath = srtPath.replace(/\\/g, '/').replace(/:/g, '\\\\:');
-
             ffmpeg(videoPath)
                 .outputOptions([
-                    `-vf subtitles=${safeSrtPath}:${styleArgs}`,
-                    '-preset fast',
-                    '-crf 23',
-                    '-c:a copy'
-                ])
+                `-vf subtitles=${safeSrtPath}:${styleArgs}`,
+                '-preset fast',
+                '-crf 23',
+                '-c:a copy'
+            ])
                 .save(outputPath)
                 .on('end', () => resolve())
-                .on('error', (err: any) => reject(new Error('Lỗi ghi phụ đề vào video: ' + err.message)));
+                .on('error', (err) => reject(new Error('Lỗi ghi phụ đề vào video: ' + err.message)));
         });
     }
-
-    async generateAutoSubtitles(file: any, srcLang: string, targetLang: string, style: string, fontSize?: number, yPos?: number, userId?: string): Promise<any> {
+    async generateAutoSubtitles(file, srcLang, targetLang, style, fontSize, yPos, userId) {
         if (!this.currentGeminiKey) {
             throw new Error('Chưa cấu hình API Key Gemini');
         }
-
-        // Ước tính phí: Charging 1000 credits (minimum) or based on video duration if we could easily get it.
-        // Let's just deduct a base fee for now, or we can use ffprobe later if needed.
         if (userId) {
             await this.deductCredits(userId, this.CREDIT_COSTS.AUTO_SUB_PER_MIN, 'Phụ đề tự động');
         }
-
         const isAllowed = await this.checkLimit('gemini');
         if (!isAllowed) {
             throw new Error('Hạn mức sử dụng Gemini đã hết. Vui lòng nâng cấp gói.');
         }
-
         const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
         if (!fs.existsSync(tempDir)) {
             fs.mkdirSync(tempDir, { recursive: true });
         }
-
-        const fileId = uuidv4();
+        const fileId = (0, uuid_1.v4)();
         const videoPath = path.join(tempDir, `${fileId}.mp4`);
         const audioPath = path.join(tempDir, `${fileId}.mp3`);
         const srtPath = path.join(tempDir, `${fileId}.srt`);
-
         try {
-            // 1. Save uploaded video
             fs.writeFileSync(videoPath, file.buffer);
-
-            // 2. Extract Audio
             await this.extractAudioWithFFmpeg(videoPath, audioPath);
-
-            // 3. Upload Audio to Gemini
-            const fileManager = new GoogleAIFileManager(this.currentGeminiKey);
+            const fileManager = new server_1.GoogleAIFileManager(this.currentGeminiKey);
             const uploadResponse = await fileManager.uploadFile(audioPath, {
                 mimeType: 'audio/mp3',
                 displayName: `audio_${fileId}`,
             });
-
-            // 4. Generate SRT Content using Gemini Pro/Flash
             const prompt = `
             Ngôn ngữ gốc của âm thanh là: ${srcLang}.
             Ngôn ngữ bạn cần dịch ra phụ đề là: ${targetLang}.
@@ -2547,7 +2274,6 @@ export class AiService implements OnModuleInit {
             
             CHỈ In ra nội dung SRT duy nhất. Không bao gồm văn bản giải thích. KHÔNG sử dụng \`\`\`srt formatting mardkown.
             `;
-
             const result = await this.model.generateContent([
                 {
                     fileData: {
@@ -2557,59 +2283,49 @@ export class AiService implements OnModuleInit {
                 },
                 { text: prompt }
             ]);
-
             let srtContent = result.response.text();
             srtContent = srtContent.replace(/\`\`\`srt|\`\`\`/g, '').trim();
-
-            // Cleanup Gemini Cloud file directly using File API to prevent storage leak
             try {
                 await fileManager.deleteFile(uploadResponse.file.name);
-            } catch (e) {
+            }
+            catch (e) {
                 console.warn("Failed to delete File API file:", e.message);
             }
-
-            // 5. Save SRT File to temp directory for later Ffmpeg burn
             fs.writeFileSync(srtPath, srtContent, 'utf8');
-
             await this.trackUsage('gemini');
-
-            // Save basic config to a json for burn API
             const configPath = path.join(tempDir, `${fileId}_config.json`);
             fs.writeFileSync(configPath, JSON.stringify({ style, fontSize, yPos }), 'utf8');
-
             return {
                 success: true,
                 srtContent: srtContent,
                 videoId: fileId
             };
-        } catch (error) {
+        }
+        catch (error) {
             console.error('AutoSub Error:', error);
-            // Cleanup temp files if they exist
-            if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
-            if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
-            if (fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
-
-            throw new InternalServerErrorException('Lỗi trong quá trình tạo phụ đề: ' + error.message);
+            if (fs.existsSync(videoPath))
+                fs.unlinkSync(videoPath);
+            if (fs.existsSync(audioPath))
+                fs.unlinkSync(audioPath);
+            if (fs.existsSync(srtPath))
+                fs.unlinkSync(srtPath);
+            throw new common_1.InternalServerErrorException('Lỗi trong quá trình tạo phụ đề: ' + error.message);
         }
     }
-
-    async downloadBurnedVideo(fileId: string): Promise<{ stream: fs.ReadStream, size: number }> {
+    async downloadBurnedVideo(fileId) {
         const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
         const videoPath = path.join(tempDir, `${fileId}.mp4`);
         const srtPath = path.join(tempDir, `${fileId}.srt`);
         const configPath = path.join(tempDir, `${fileId}_config.json`);
         const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
-
         if (fs.existsSync(outputPath)) {
             const stat = fs.statSync(outputPath);
             const stream = fs.createReadStream(outputPath);
             return { stream, size: stat.size };
         }
-
         if (!fs.existsSync(videoPath) || !fs.existsSync(srtPath)) {
             throw new Error('Video id không hợp lệ hoặc đã hết hạn.');
         }
-
         let style = 'tiktok';
         let fontSizeVal = undefined;
         let yPosVal = 80;
@@ -2619,27 +2335,22 @@ export class AiService implements OnModuleInit {
             fontSizeVal = cfg.fontSize;
             yPosVal = cfg.yPos || 80;
         }
-
         console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}`);
         await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal);
-
         const stat = fs.statSync(outputPath);
         const stream = fs.createReadStream(outputPath);
         return { stream, size: stat.size };
     }
-
-    async streamBurnedVideo(fileId: string, req: any, res: any): Promise<any> {
+    async streamBurnedVideo(fileId, req, res) {
         const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
         const videoPath = path.join(tempDir, `${fileId}.mp4`);
         const srtPath = path.join(tempDir, `${fileId}.srt`);
         const configPath = path.join(tempDir, `${fileId}_config.json`);
         const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
-
         if (!fs.existsSync(outputPath)) {
             if (!fs.existsSync(videoPath) || !fs.existsSync(srtPath)) {
                 throw new Error('Video id không hợp lệ hoặc đã hết hạn.');
             }
-
             let style = 'tiktok';
             let fontSizeVal = undefined;
             let yPosVal = 80;
@@ -2649,20 +2360,16 @@ export class AiService implements OnModuleInit {
                 fontSizeVal = cfg.fontSize;
                 yPosVal = cfg.yPos || 80;
             }
-
             console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}`);
             await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal);
         }
-
         const stat = fs.statSync(outputPath);
         const fileSize = stat.size;
         const range = req.headers.range;
-
         if (range) {
             const parts = range.replace(/bytes=/, "").split("-");
             const start = parseInt(parts[0], 10);
             const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
-
             const chunksize = (end - start) + 1;
             const file = fs.createReadStream(outputPath, { start, end });
             const head = {
@@ -2671,11 +2378,11 @@ export class AiService implements OnModuleInit {
                 'Content-Length': chunksize,
                 'Content-Type': 'video/mp4',
             };
-
             res.writeHead(206, head);
             file.pipe(res);
             return { stream: file, size: chunksize, path: outputPath };
-        } else {
+        }
+        else {
             const head = {
                 'Content-Length': fileSize,
                 'Content-Type': 'video/mp4',
@@ -2686,26 +2393,22 @@ export class AiService implements OnModuleInit {
             return { stream: file, size: fileSize, path: outputPath };
         }
     }
-
-    async updateSrtContent(fileId: string, srtContent: string, style?: string, fontSize?: number, yPos?: number): Promise<any> {
+    async updateSrtContent(fileId, srtContent, style, fontSize, yPos) {
         const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
         const srtPath = path.join(tempDir, `${fileId}.srt`);
         const configPath = path.join(tempDir, `${fileId}_config.json`);
         const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
-
         if (!fs.existsSync(srtPath)) {
             throw new Error('Không tìm thấy file phụ đề gốc để cập nhật.');
         }
-
         fs.writeFileSync(srtPath, srtContent, 'utf8');
-
-        // Update config if provided
         if (style || fontSize || yPos) {
             let currentConfig = {};
             if (fs.existsSync(configPath)) {
                 try {
                     currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-                } catch (e) { }
+                }
+                catch (e) { }
             }
             const newConfig = { ...currentConfig, style, fontSize, yPos };
             fs.writeFileSync(configPath, JSON.stringify(newConfig), 'utf8');
@@ -2713,25 +2416,21 @@ export class AiService implements OnModuleInit {
         if (fs.existsSync(outputPath)) {
             try {
                 fs.unlinkSync(outputPath);
-            } catch (e) { }
+            }
+            catch (e) { }
         }
-
         return { success: true };
     }
-
     async onModuleInit() {
         console.log('--- Khởi tạo hệ thống lập lịch tự động hóa AI ---');
-        // Quét mỗi phút
         setInterval(() => {
             this.checkScheduledAutomations();
         }, 60 * 1000);
     }
-
-    private async checkScheduledAutomations() {
+    async checkScheduledAutomations() {
         try {
             const db = this.firebaseAdmin.firestore();
             const now = new Date();
-            // Lấy giờ hiện tại theo múi giờ Việt Nam (HH:mm)
             const currentTime = now.toLocaleTimeString('vi-VN', {
                 timeZone: 'Asia/Ho_Chi_Minh',
                 hour12: false,
@@ -2741,41 +2440,34 @@ export class AiService implements OnModuleInit {
             const currentDate = now.toLocaleDateString('vi-VN', {
                 timeZone: 'Asia/Ho_Chi_Minh'
             });
-
             const snapshot = await db.collection('automations')
                 .where('status', '==', 'Active')
                 .get();
-
             for (const doc of snapshot.docs) {
-                const wf = { id: doc.id, ...doc.data() } as any;
-
-                // Kiểm tra xem đã đến giờ chạy chưa
+                const wf = { id: doc.id, ...doc.data() };
                 if (wf.executionTime === currentTime) {
-                    // Kiểm tra xem ngày hôm nay đã chạy chưa để tránh chạy lặp trong cùng 1 phút
                     if (wf.lastRunDate !== currentDate) {
                         console.log(`--- [SCHEDULER] Đang tự động chạy quy trình: ${wf.name} (${wf.id}) ---`);
                         await this.runAutomationById(wf.id, wf.userId);
-
-                        // Cập nhật ngày chạy gần nhất
                         await doc.ref.update({
                             lastRunDate: currentDate
                         });
                     }
                 }
             }
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Lỗi trong hệ thống lập lịch:', error);
         }
     }
-
-    async runAutomationById(id: string, userId: string) {
+    async runAutomationById(id, userId) {
         const db = this.firebaseAdmin.firestore();
         const wfRef = db.collection('automations').doc(id);
         const wfDoc = await wfRef.get();
-        if (!wfDoc.exists) return;
-        const wf = wfDoc.data()!;
-
-        const addBotLog = async (event: string, status: string = 'success') => {
+        if (!wfDoc.exists)
+            return;
+        const wf = wfDoc.data();
+        const addBotLog = async (event, status = 'success') => {
             await wfRef.collection('logs').add({
                 event,
                 status,
@@ -2786,21 +2478,15 @@ export class AiService implements OnModuleInit {
                 lastEventStatus: status
             });
         };
-
         try {
             await wfRef.update({ runningStatus: 'running' });
             await addBotLog(`Bot: Khởi tạo quy trình ${wf.name} tự động...`);
-
             const quantity = parseInt(wf.quantity) || 1;
             const contentSubType = wf.contentSubType || 'sales';
-            const topics = contentSubType === 'topics' && wf.topicList ? wf.topicList.split('\n').filter((t: string) => t.trim() !== '') : [];
-
-            // Tính toán tổng số vòng lặp
+            const topics = contentSubType === 'topics' && wf.topicList ? wf.topicList.split('\n').filter((t) => t.trim() !== '') : [];
             const totalTasks = contentSubType === 'topics' ? (topics.length * quantity) : quantity;
             await addBotLog(`Bot: Bắt đầu quy trình tạo tổng cộng ${totalTasks} kịch bản...`);
-
             let overallIndex = 0;
-
             if (contentSubType === 'topics') {
                 for (let t = 0; t < topics.length; t++) {
                     const currentTopic = topics[t];
@@ -2809,17 +2495,15 @@ export class AiService implements OnModuleInit {
                         await this.processSingleContentTask(wf, wfRef, currentTopic, overallIndex, totalTasks, userId, contentSubType);
                     }
                 }
-            } else {
+            }
+            else {
                 for (let i = 0; i < quantity; i++) {
                     overallIndex++;
                     const currentTopic = wf.description || wf.features;
                     await this.processSingleContentTask(wf, wfRef, currentTopic, overallIndex, totalTasks, userId, contentSubType);
                 }
             }
-
             await addBotLog("Bot: Hoàn tất tạo toàn bộ kịch bản!");
-
-            // Cập nhật stats
             await wfRef.update({
                 runs: admin.firestore.FieldValue.increment(1),
                 lastRun: new Date().toLocaleTimeString('vi-VN', {
@@ -2828,31 +2512,27 @@ export class AiService implements OnModuleInit {
                     minute: '2-digit'
                 })
             });
-
             await addBotLog("Bot: Quy trình hoàn thành thành công!");
-        } catch (error) {
+        }
+        catch (error) {
             console.error('Lỗi chạy quy trình tự động:', error);
             await addBotLog(`Bot Lỗi: ${error.message}`, 'error');
             await wfRef.update({ runningStatus: 'error' });
-        } finally {
+        }
+        finally {
             await wfRef.update({ runningStatus: 'idle' });
         }
     }
-
-    private async processSingleContentTask(wf: any, wfRef: any, topic: string, currentIndex: number, total: number, userId: string, subType: string) {
-        // Kết nối AI cho từng kịch bản
+    async processSingleContentTask(wf, wfRef, topic, currentIndex, total, userId, subType) {
         const stepTitle = subType === 'topics'
             ? `Bot: Đang tạo bản #${currentIndex}/${total} cho chủ đề: "${topic.substring(0, 30)}..."`
             : `Bot: Đang xử lý kịch bản ${currentIndex}/${total}...`;
-
         const connectionLogRef = await wfRef.collection('logs').add({
             event: stepTitle,
             status: "loading",
             createdAt: admin.firestore.FieldValue.serverTimestamp()
         });
-
         const db = this.firebaseAdmin.firestore();
-
         try {
             let resultData = null;
             if (wf.type === 'script' || wf.type === 'content_creation') {
@@ -2869,36 +2549,26 @@ export class AiService implements OnModuleInit {
                     tone: wf.tone || 'Chuyên nghiệp',
                     videoType: wf.videoType
                 }, userId);
-
                 let imageUrl = null;
                 if (wf.type === 'content_creation') {
-                    // Log nhỏ cho bước tạo ảnh
                     await wfRef.collection('logs').add({
                         event: `Bot: Đang thiết kế ảnh AI minh họa cho bản #${currentIndex}...`,
                         status: "loading"
                     });
                     try {
-                        const imageResult = await this.generateImageMockup(
-                            `A professional high-quality marketing image for ${wf.name}. Context: ${topic}. Content: ${response.content.substring(0, 150)}`,
-                            undefined,
-                            undefined,
-                            '1:1',
-                            userId
-                        );
+                        const imageResult = await this.generateImageMockup(`A professional high-quality marketing image for ${wf.name}. Context: ${topic}. Content: ${response.content.substring(0, 150)}`, undefined, undefined, '1:1', userId);
                         imageUrl = imageResult.url;
-                    } catch (imgErr) {
+                    }
+                    catch (imgErr) {
                         console.error("Lỗi tạo ảnh AI:", imgErr);
                     }
                 }
-
                 resultData = {
                     content: response.content,
                     imageUrl: imageUrl,
                     topic: subType === 'topics' ? topic : null,
                     type: 'text_with_image'
                 };
-
-                // Lưu vào thư viện kịch bản viral (nếu có userId)
                 if (userId) {
                     await db.collection('ai_viral_scripts').add({
                         userId,
@@ -2911,19 +2581,12 @@ export class AiService implements OnModuleInit {
                         createdAt: admin.firestore.FieldValue.serverTimestamp()
                     });
                 }
-            } else if (wf.type === 'analytics') {
-                // Logic cho Đối thủ \u0026 Trend
+            }
+            else if (wf.type === 'analytics') {
                 await connectionLogRef.update({ event: `Bot: Đang thu thập dữ liệu xu hướng cho ngành ${wf.field}...` });
-
-                // 1. Lấy dữ liệu trending thực tế
                 const trendingData = await this.getTikTokTrending('VN', 15, false, wf.field, userId);
-
-                // 2. Lấy từ khóa trending
                 const trendingKeywords = await this.getTrendingKeywords(wf.field, userId);
-
                 await connectionLogRef.update({ event: `Bot: Đang phân tích chiến thuật của đối thủ trong ngành...` });
-
-                // 3. Phân tích chuyên sâu bằng AI
                 const analysisPrompt = `
                 Bạn là một chuyên gia Marketing thực chiến. Hãy phân tích dữ liệu sau cho ngành hàng "${wf.field}":
                 
@@ -2931,7 +2594,7 @@ export class AiService implements OnModuleInit {
                 ${JSON.stringify(trendingData.insights || {})}
                 
                 VIDEO ĐANG HOT (Mô tả):
-                ${trendingData.videos?.slice(0, 5).map((v: any) => `- ${v.title} (${v.digg_count} likes)`).join('\\n')}
+                ${trendingData.videos?.slice(0, 5).map((v) => `- ${v.title} (${v.digg_count} likes)`).join('\\n')}
                 
                 TỪ KHÓA ĐANG LÊN:
                 ${trendingKeywords.slice(0, 5).map(k => `- ${k.keyword} (Tiềm năng: ${k.potential_score})`).join('\\n')}
@@ -2950,35 +2613,32 @@ export class AiService implements OnModuleInit {
                 }
                 CHỈ TRẢ VỀ JSON. KHÔNG GIẢI THÍCH THÊM.
                 `;
-
                 const aiResult = await this.model.generateContent(analysisPrompt);
                 const aiText = aiResult.response.text();
                 const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-
                 let report = {
                     summary: "AI không thể trích xuất JSON báo cáo.",
                     trends: [],
                     competitors_strategy: [],
                     recommended_action: "Kiểm tra lại dữ liệu đầu vào."
                 };
-
                 try {
                     report = JSON.parse(jsonMatch ? jsonMatch[0] : aiText);
-                } catch (e) {
+                }
+                catch (e) {
                     console.error("Lỗi parse JSON report:", e);
                 }
-
                 resultData = {
                     content: `Báo cáo phân tích tự động cho ${wf.field} (Bản #${currentIndex})\n\n${report.summary}`,
-                    report: report, // Lưu object report để frontend render đẹp hơn
+                    report: report,
                     type: 'analytics_report',
                     trendingVideos: trendingData.videos?.slice(0, 5) || []
                 };
-            } else {
+            }
+            else {
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 resultData = { content: `Kết quả tự động hóa định kỳ cho ${wf.type}: ${wf.name} (Bản #${currentIndex})`, type: 'text' };
             }
-
             await connectionLogRef.update({ status: 'success' });
             const resultDoc = {
                 ...resultData,
@@ -2988,14 +2648,18 @@ export class AiService implements OnModuleInit {
                 workflowType: wf.type,
                 createdAt: admin.firestore.FieldValue.serverTimestamp()
             };
-
-            // 1. Lưu vào sub-collection của workflow
             await wfRef.collection('results').add(resultDoc);
-
-            // 2. Lưu vào bộ sưu tập tổng
             await db.collection('automation_all_results').add(resultDoc);
-        } catch (err) {
+        }
+        catch (err) {
             await connectionLogRef.update({ status: 'error', event: `Bot: Lỗi ở bước ${currentIndex}: ${err.message}` });
         }
     }
-}
+};
+exports.AiService = AiService;
+exports.AiService = AiService = __decorate([
+    (0, common_1.Injectable)(),
+    __param(1, (0, common_1.Inject)('FIREBASE_ADMIN')),
+    __metadata("design:paramtypes", [config_1.ConfigService, Object])
+], AiService);
+//# sourceMappingURL=ai.service.js.map
