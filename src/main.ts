@@ -5,7 +5,18 @@ import { json, urlencoded, text } from 'express';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors({
-    origin: true, // Phản hồi đúng origin của client gửi lên (linh hoạt cho cả localhost và web)
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      const allowedOrigins = [
+        'https://marketos-9b845.web.app',
+        'http://localhost:5173',
+        'https://vibe-code.vercel.app',
+      ];
+      if (!origin || allowedOrigins.some(o => origin.startsWith(o))) {
+        callback(null, true);
+      } else {
+        callback(null, false); // Không báo lỗi Error, chỉ trả về false để NestJS tự xử lý
+      }
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
     optionsSuccessStatus: 204,
