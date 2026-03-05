@@ -11,7 +11,9 @@ async function bootstrap() {
         'http://localhost:5173',
         'https://vibe-code.vercel.app',
       ];
-      if (!origin || allowedOrigins.includes(origin)) {
+      // Kiểm tra nếu origin (đã xóa dấu / ở cuối) nằm trong danh sách cho phép
+      const sanitizedOrigin = origin?.replace(/\/$/, '');
+      if (!origin || (sanitizedOrigin && allowedOrigins.includes(sanitizedOrigin))) {
         callback(null, true);
       } else {
         callback(new Error('Origin not allowed by CORS'));
