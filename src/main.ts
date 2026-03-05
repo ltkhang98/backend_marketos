@@ -5,7 +5,11 @@ import { json, urlencoded, text } from 'express';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors({
-    origin: '*',
+    origin: [
+      'https://marketos-9b045.web.app',
+      'http://localhost:5173',
+      'https://vibe-code.vercel.app'
+    ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });
