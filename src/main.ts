@@ -5,12 +5,10 @@ import { json, urlencoded, text } from 'express';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors({
-    origin: [
-      'https://marketos-9b845.web.app',
-      'http://localhost:5173'
-    ],
+    origin: true, // Phản hồi đúng origin của client gửi lên (linh hoạt cho cả localhost và web)
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
+    optionsSuccessStatus: 204,
   });
 
   // Khôi phục global prefix 'api' nhưng loại trừ các route sepay để tránh lỗi 404 từ SeePay
