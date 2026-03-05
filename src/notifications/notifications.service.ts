@@ -34,6 +34,19 @@ export class NotificationsService {
         }
     }
 
+    async createSystemNotification(notificationData: any) {
+        try {
+            const docRef = await this.collection.add({
+                ...notificationData,
+                createdBy: 'system',
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            return { id: docRef.id, ...notificationData };
+        } catch (error) {
+            throw new InternalServerErrorException('Lỗi khi tạo thông báo hệ thống: ' + error.message);
+        }
+    }
+
     async remove(id: string, adminUid: string) {
         // Verify Admin role
         const adminDoc = await this.db.collection('users').doc(adminUid).get();
