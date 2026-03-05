@@ -573,7 +573,7 @@ export class AiService implements OnModuleInit {
                 `;
 
             const result = await this.model.generateContent(prompt);
-            const responseText = (await result.response).text();
+            const responseText = result.response.text();
 
             if (!responseText) return [];
 
@@ -631,7 +631,7 @@ export class AiService implements OnModuleInit {
             `;
 
             const result = await this.model.generateContent(prompt);
-            const responseText = (await result.response).text();
+            const responseText = result.response.text();
 
             const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
             if (!jsonMatch) return [];
@@ -681,7 +681,7 @@ export class AiService implements OnModuleInit {
             `;
 
             const result = await this.model.generateContent(prompt);
-            const responseText = (await result.response).text();
+            const responseText = result.response.text();
 
             const jsonMatch = responseText.match(/\{[\s\S]*\}/);
             if (!jsonMatch) return null;
