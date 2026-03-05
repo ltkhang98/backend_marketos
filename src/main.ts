@@ -7,7 +7,7 @@ async function bootstrap() {
   app.enableCors({
     origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
       const allowedOrigins = [
-        'https://marketos-9b045.web.app',
+        'https://marketos-9b845.web.app',
         'http://localhost:5173',
         'https://vibe-code.vercel.app',
       ];
