@@ -5,20 +5,10 @@ import { json, urlencoded, text } from 'express';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors({
-    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-      const allowedOrigins = [
-        'https://marketos-9b845.web.app',
-        'http://localhost:5173',
-        'https://vibe-code.vercel.app',
-      ];
-      // Kiểm tra nếu origin (đã xóa dấu / ở cuối) nằm trong danh sách cho phép
-      const sanitizedOrigin = origin?.replace(/\/$/, '');
-      if (!origin || (sanitizedOrigin && allowedOrigins.includes(sanitizedOrigin))) {
-        callback(null, true);
-      } else {
-        callback(new Error('Origin not allowed by CORS'));
-      }
-    },
+    origin: [
+      'https://marketos-9b845.web.app',
+      'http://localhost:5173'
+    ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
   });
