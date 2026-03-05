@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Param, Req, UseGuards, Res, Delete, HttpStatus } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, Req, UseGuards, Res, Delete, HttpStatus, Query } from '@nestjs/common';
 import { LinksService } from './links.service';
 import type { Response } from 'express';
 
@@ -22,8 +22,8 @@ export class LinksController {
     }
 
     @Get('analytics/:userId')
-    async getAnalytics(@Param('userId') userId: string) {
-        return this.linksService.getAnalytics(userId);
+    async getAnalytics(@Param('userId') userId: string, @Query('shortId') shortId?: string) {
+        return this.linksService.getAnalytics(userId, shortId);
     }
 
     @Get('redirect/:shortId')

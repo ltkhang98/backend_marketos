@@ -17,7 +17,7 @@ export declare class LinksService {
     deleteLink(shortId: string, userId: string): Promise<{
         success: boolean;
     }>;
-    getAnalytics(userId: string): Promise<{
+    getAnalytics(userId: string, shortId?: string): Promise<{
         totalLinks: number;
         totalClicks: any;
         timelineData: {
@@ -29,6 +29,15 @@ export declare class LinksService {
             originalUrl: any;
             clicks: any;
         }[];
+        linksList: {
+            shortId: any;
+            originalUrl: any;
+        }[];
         averageClicks: string | number;
+        currentLink: {
+            shortId: any;
+            originalUrl: any;
+            createdAt: any;
+        } | null;
     }>;
 }

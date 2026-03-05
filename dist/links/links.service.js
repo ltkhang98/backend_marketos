@@ -105,44 +105,76 @@ let LinksService = class LinksService {
         await this.db.collection('short_links').doc(shortId).delete();
         return { success: true };
     }
-    async getAnalytics(userId) {
-        const linksSnapshot = await this.db.collection('short_links')
-            .where('userId', '==', userId)
-            .get();
-        const links = linksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-        const totalLinks = links.length;
-        const totalClicks = links.reduce((acc, curr) => acc + (curr.clicks || 0), 0);
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-        const clicksSnapshot = await this.db.collection('link_clicks')
-            .where('userId', '==', userId)
-            .where('timestamp', '>=', thirtyDaysAgo)
-            .orderBy('timestamp', 'asc')
-            .get();
-        const clicksByDate = {};
-        clicksSnapshot.docs.forEach(doc => {
-            const date = doc.data().timestamp?.toDate()?.toLocaleDateString('vi-VN') || 'N/A';
-            clicksByDate[date] = (clicksByDate[date] || 0) + 1;
-        });
-        const timelineData = Object.entries(clicksByDate).map(([date, count]) => ({
-            date,
-            clicks: count
-        }));
-        const topLinks = [...links]
-            .sort((a, b) => (b.clicks || 0) - (a.clicks || 0))
-            .slice(0, 5)
-            .map(l => ({
-            shortId: l.shortId,
-            originalUrl: l.originalUrl,
-            clicks: l.clicks
-        }));
-        return {
-            totalLinks,
-            totalClicks,
-            timelineData,
-            topLinks,
-            averageClicks: totalLinks > 0 ? (totalClicks / totalLinks).toFixed(1) : 0
-        };
+    async getAnalytics(userId, shortId) {
+        try {
+            const linksSnapshot = await this.db.collection('short_links')
+                .where('userId', '==', userId)
+                .get();
+            const links = linksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+            const currentLink = shortId ? links.find(l => l.shortId === shortId) : null;
+            const totalLinks = links.length;
+            const totalClicks = shortId && currentLink ? (currentLink.clicks || 0) : links.reduce((acc, curr) => acc + (curr.clicks || 0), 0);
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setHours(0, 0, 0, 0);
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            const clicksSnapshot = await this.db.collection('link_clicks')
+                .where('userId', '==', userId)
+                .get();
+            const clicksByDate = {};
+            clicksSnapshot.docs.forEach(doc => {
+                const data = doc.data();
+                if (!data.timestamp)
+                    return;
+                const clickDate = data.timestamp.toDate();
+                if (clickDate < thirtyDaysAgo)
+                    return;
+                if (shortId && data.shortId !== shortId)
+                    return;
+                const day = clickDate.getDate().toString().padStart(2, '0');
+                const month = (clickDate.getMonth() + 1).toString().padStart(2, '0');
+                const year = clickDate.getFullYear();
+                const dateKey = `${day}/${month}/${year}`;
+                clicksByDate[dateKey] = (clicksByDate[dateKey] || 0) + 1;
+            });
+            const timelineData = [];
+            for (let i = 29; i >= 0; i--) {
+                const d = new Date();
+                d.setDate(d.getDate() - i);
+                const day = d.getDate().toString().padStart(2, '0');
+                const month = (d.getMonth() + 1).toString().padStart(2, '0');
+                const year = d.getFullYear();
+                const dateKey = `${day}/${month}/${year}`;
+                timelineData.push({
+                    date: dateKey,
+                    clicks: clicksByDate[dateKey] || 0
+                });
+            }
+            const topLinks = [...links]
+                .sort((a, b) => (b.clicks || 0) - (a.clicks || 0))
+                .slice(0, 10)
+                .map(l => ({
+                shortId: l.shortId,
+                originalUrl: l.originalUrl,
+                clicks: l.clicks || 0
+            }));
+            return {
+                totalLinks,
+                totalClicks,
+                timelineData,
+                topLinks,
+                linksList: links.map(l => ({ shortId: l.shortId, originalUrl: l.originalUrl })),
+                averageClicks: totalLinks > 0 ? (totalClicks / totalLinks).toFixed(1) : 0,
+                currentLink: currentLink ? {
+                    shortId: currentLink.shortId,
+                    originalUrl: currentLink.originalUrl,
+                    createdAt: currentLink.createdAt
+                } : null
+            };
+        }
+        catch (error) {
+            console.error("Lỗi getAnalytics:", error);
+            throw error;
+        }
     }
 };
 exports.LinksService = LinksService;

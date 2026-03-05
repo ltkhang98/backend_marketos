@@ -2912,7 +2912,7 @@ export class AiService implements OnModuleInit {
                     });
                 }
             } else if (wf.type === 'analytics') {
-                // Logic cho Đối thủ \u0026 Trend
+                // Logic cho Đối thủ & Trend
                 await connectionLogRef.update({ event: `Bot: Đang thu thập dữ liệu xu hướng cho ngành ${wf.field}...` });
 
                 // 1. Lấy dữ liệu trending thực tế
@@ -2931,12 +2931,12 @@ export class AiService implements OnModuleInit {
                 ${JSON.stringify(trendingData.insights || {})}
                 
                 VIDEO ĐANG HOT (Mô tả):
-                ${trendingData.videos?.slice(0, 5).map((v: any) => `- ${v.title} (${v.digg_count} likes)`).join('\\n')}
+                ${trendingData.videos?.slice(0, 5).map((v: any) => `- ${v.title} (${v.digg_count} likes)`).join('\n')}
                 
                 TỪ KHÓA ĐANG LÊN:
-                ${trendingKeywords.slice(0, 5).map(k => `- ${k.keyword} (Tiềm năng: ${k.potential_score})`).join('\\n')}
+                ${trendingKeywords.slice(0, 5).map(k => `- ${k.keyword} (Tiềm năng: ${k.potential_score})`).join('\n')}
 
-                NHIỆM VỤ: Hãy tạo một báo cáo tóm tắt "Đối thủ \u0026 Xu hướng" cực kỳ súc tích.
+                NHIỆM VỤ: Hãy tạo một báo cáo tóm tắt "Đối thủ & Xu hướng" cực kỳ súc tích.
                 YÊU CẦU TRẢ VỀ JSON:
                 {
                     "summary": "Tóm tắt 1 câu về thị trường hiện tại",
@@ -2973,6 +2973,145 @@ export class AiService implements OnModuleInit {
                     report: report, // Lưu object report để frontend render đẹp hơn
                     type: 'analytics_report',
                     trendingVideos: trendingData.videos?.slice(0, 5) || []
+                };
+            } else if (wf.type === 'scraping') {
+                // Logic Săn sản phẩm Win (Winning Products)
+                await connectionLogRef.update({ event: `Bot: Đang truy cập dữ liệu thị trường và quét sản phẩm trending ngành ${wf.field}...` });
+
+                // 1. Phân phối dữ liệu cho AI
+                const trendingData = await this.getTikTokTrending('VN', 20, false, wf.field, userId);
+                const keywords = await this.getTrendingKeywords(wf.field, userId);
+
+                await connectionLogRef.update({ event: `Bot: Đang bóc tách và nhận diện Winning Products tiềm năng dựa trên AI Logic...` });
+
+                const scrapePrompt = `
+                BẠN LÀ MỘT CHUYÊN GIA TƯ VẤN CHIẾN LƯỢC E-COMMERCE VÀ NHÀ PHÂN TÍCH DỮ LIỆU THỊ TRƯỜNG CẤP CAO.
+                NHIỆM VỤ: Dựa trên nguồn dữ liệu đa chiều dưới đây về ngành hàng "${wf.field}", hãy thực hiện quy trình "REVERSE ENGINEERING" để nhận diện và phân tích các "WINNING PRODUCTS" (Sản phẩm thắng thắng thế).
+
+                MỤC TIÊU PHÂN TÍCH CHI TIẾT: ${wf.actionTarget || 'Nhận diện sản phẩm tiềm năng bùng nổ'}
+                CẤP ĐỘ PHÂN TÍCH: ${wf.aiMode === 'creative' ? 'Tư duy bứt phá (Blue Ocean Store)' : wf.aiMode === 'precise' ? 'Dữ liệu thực chứng (Hard Data)' : 'Cân bằng giữa xu hướng & tính khả thi'}
+
+                DỮ LIỆU ĐẦU VÀO TỪ HỆ THỐNG:
+                1. INSIGHTS XU HƯỚNG TIKTOK TRONG 7 NGÀY:
+                ${JSON.stringify(trendingData.insights || {})}
+
+                2. CHỈ SỐ TỪ KHÓA ĐANG TĂNG TRƯỞNG:
+                ${keywords.map(k => `- ${k.keyword} (Độ nóng: ${k.trend})`).join('\n')}
+
+                3. PHÂN TÍCH VIDEO VIRAL (HÀNH VI NGƯỜI DÙNG):
+                ${trendingData.videos?.slice(0, 10).map((v: any) => `- ${v.title} (Lượt tương tác: ${v.digg_count} tim, ${v.comment_count} bình luận)`).join('\n')}
+
+                YÊU CẦU BẢN BÁO CÁO (TRẢ VỀ ĐỊNH DẠNG JSON):
+                {
+                    "overall_market_sentiment": "Phân tích bối cảnh thị trường ngách, tâm lý khách hàng và dự báo độ dài của sóng trend hiện tại.",
+                    "winning_products": [
+                        {
+                            "name": "Tên sản phẩm chuyên nghiệp kèm từ khóa SEO",
+                            "category": "Ngách sản phẩm cụ thể",
+                            "win_reason": "Vận dụng mô hình 4P/USP để giải thích tại sao sản phẩm này đang 'Win' (VD: Giá hời, giải quyết nỗi đau mới, bắt kịp trend thẩm mỹ...)",
+                            "target_audience": "Chân dung khách hàng mục tiêu chi tiết (Độ tuổi, sở thích, hành vi)",
+                            "estimated_price": "Khoảng giá tối ưu để đạt tỷ lệ chuyển đổi cao nhất",
+                            "potential_score": "Điểm tiềm năng (Scoring 1-10)",
+                            "marketing_strategy": "Chiến lược 'Go-to-market': Cách làm video, Hook tiêu đề, và Angle quảng cáo đề xuất",
+                            "pros_cons": {"pros": ["..."], "cons": ["..."]}
+                        }
+                    ],
+                    "niche_opportunities": "Những khoảng trống thị trường (Greenfield) mà đối thủ chưa khai thác hết dựa trên dữ liệu keyword.",
+                    "action_plan": "Lộ trình thực thi 3 bước: Kiểm tra nguồn hàng -> Test Content -> Scale Ads"
+                }
+                LƯU Ý: Nội dung phải mang tính chiến lược, ngôn ngữ chuyên ngành marketing, không viết chung chung.
+                CHỈ TRẢ VỀ JSON. KHÔNG GIẢI THÍCH THÊM.
+                `;
+
+                const aiResult = await this.model.generateContent(scrapePrompt);
+                const responseText = aiResult.response.text();
+                const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+
+                let report = {
+                    overall_market_sentiment: "Dữ liệu chưa đủ để phân tích.",
+                    winning_products: [],
+                    niche_opportunities: "Không tìm thấy cơ hội ngách rõ ràng.",
+                    action_plan: "Kiểm tra lại nguồn cấp dữ liệu."
+                };
+
+                try {
+                    report = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
+                } catch (e) {
+                    console.error("Lỗi parse JSON scraping report:", e);
+                }
+
+                resultData = {
+                    content: `Báo cáo săn sản phẩm Win: ${wf.field} (Bản #${currentIndex})\n\n${report.overall_market_sentiment}`,
+                    report: report, // Chứa mảng winning_products
+                    type: 'winning_products_report',
+                    trendingVideos: trendingData.videos?.slice(0, 3) || []
+                };
+            } else if (wf.type === 'market_research') {
+                // Logic Nghiên cứu ngách (Market Research)
+                await connectionLogRef.update({ event: `Bot: Đang thu thập dữ liệu thị trường toàn cầu cho ngách ${wf.field}...` });
+
+                const trendingData = await this.getTikTokTrending('VN', 30, false, wf.field, userId);
+                const keywords = await this.getTrendingKeywords(wf.field, userId);
+
+                await connectionLogRef.update({ event: `Bot: AI đang thiết lập bản đồ xu hướng và phân tích tiềm năng ngách...` });
+
+                const researchPrompt = `
+                BẠN LÀ MỘT CHUYÊN GIA PHÂN TÍCH THỊ TRƯỜNG VÀ CHIẾN LƯỢC GIA KINH DOANH QUỐC TẾ.
+                NHIỆM VỤ: Thực hiện một cuộc nghiên cứu sâu rộng về ngách "${wf.field}" dựa trên dữ liệu thời gian thực tại thị trường Việt Nam.
+
+                DỮ LIỆU ĐẦU VÀO:
+                - Insights TikTok: ${JSON.stringify(trendingData.insights || {})}
+                - Dữ liệu video viral mới nhất: ${trendingData.videos?.slice(0, 10).map((v: any) => `- ${v.title} (Engagement: ${v.digg_count} likes, ${v.play_count} views)`).join('\n')}
+                - Keywords hot: ${keywords.map(k => k.keyword).join(', ')}
+
+                YÊU CẦU BÁO CÁO CHI TIẾT (TRẢ VỀ JSON):
+                {
+                    "niche_name": "Tên ngách chính xác",
+                    "market_size_evaluation": "Đánh giá quy mô và sức mua của thị trường ngách này hiện tại.",
+                    "trend_data": [
+                        {"label": "Tuần 1", "value": 35, "value_display": "1.2k đơn"},
+                        {"label": "Tuần 2", "value": 50, "value_display": "1.8k đơn"},
+                        {"label": "Tuần 3", "value": 80, "value_display": "3.2k đơn"},
+                        {"label": "Tuần 4", "value": 65, "value_display": "2.4k đơn"}
+                    ],
+                    "trending_analysis": "Phân tích biến động dựa trên số liệu sản lượng bán và tương tác.",
+                    "competitor_landscape": "Đánh giá mức độ cạnh tranh và đối thủ chính.",
+                    "customer_pain_points": ["Nỗi đau 1", "Nỗi đau 2", "..."],
+                    "recommended_platforms": [
+                        {"platform": "TikTok", "reason": "...", "priority": "High"},
+                        {"platform": "Shopee", "reason": "...", "priority": "Medium"}
+                    ],
+                    "viral_hooks": ["Hook 1 (Ví dụ: Bí mật mà các shop thời trang không muốn bạn biết...)", "Hook 2", "..."],
+                    "key_metrics": ["AOV (Giá trị đơn trung bình)", "Conversion Rate dự kiến", "CAC dự kiến"],
+                    "content_direction": "Chủ đề nội dung chủ đạo",
+                    "opportunity_score": 85,
+                    "swot_analysis": {
+                        "strengths": ["..."],
+                        "weaknesses": ["..."],
+                        "opportunities": ["..."],
+                        "threats": ["..."]
+                    },
+                    "strategic_advice": "Lời khuyên chiến lược cụ thể dựa trên số liệu sản lượng bán."
+                }
+                LƯU Ý: trend_data PHẢI DỰA TRÊN SẢN LƯỢNG BÁN (SALES VOLUME) ƯỚC TÍNH TỪ DỮ LIỆU THỰC TẾ. value_display là con số cụ thể kèm đơn vị đơn hàng.
+                CHỈ TRẢ VỀ JSON. KHÔNG GIẢI THÍCH THÊM.
+                `;
+
+                const aiResult = await this.model.generateContent(researchPrompt);
+                const responseText = aiResult.response.text();
+                const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+
+                let report = { niche_name: wf.field, opportunity_score: 0, trend_data: [] };
+                try {
+                    report = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
+                } catch (e) {
+                    console.error("Lỗi parse JSON research report:", e);
+                }
+
+                resultData = {
+                    content: `Báo cáo nghiên cứu ngách: ${report.niche_name}\nĐiểm cơ hội: ${report.opportunity_score}/100`,
+                    report: report,
+                    type: 'market_research_report'
                 };
             } else {
                 await new Promise(resolve => setTimeout(resolve, 2000));

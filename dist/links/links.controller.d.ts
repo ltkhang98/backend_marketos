@@ -20,7 +20,7 @@ export declare class LinksController {
     deleteLink(shortId: string, userId: string): Promise<{
         success: boolean;
     }>;
-    getAnalytics(userId: string): Promise<{
+    getAnalytics(userId: string, shortId?: string): Promise<{
         totalLinks: number;
         totalClicks: any;
         timelineData: {
@@ -32,7 +32,16 @@ export declare class LinksController {
             originalUrl: any;
             clicks: any;
         }[];
+        linksList: {
+            shortId: any;
+            originalUrl: any;
+        }[];
         averageClicks: string | number;
+        currentLink: {
+            shortId: any;
+            originalUrl: any;
+            createdAt: any;
+        } | null;
     }>;
     redirect(shortId: string, res: Response): Promise<void | Response<any, Record<string, any>>>;
 }

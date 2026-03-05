@@ -75,53 +75,93 @@ export class LinksService {
         return { success: true };
     }
 
-    async getAnalytics(userId: string) {
-        // Get all links for this user to calculate totals
-        const linksSnapshot = await this.db.collection('short_links')
-            .where('userId', '==', userId)
-            .get();
+    async getAnalytics(userId: string, shortId?: string) {
+        try {
+            // 1. Lấy tất cả link của user
+            const linksSnapshot = await this.db.collection('short_links')
+                .where('userId', '==', userId)
+                .get();
 
-        const links = linksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
-        const totalLinks = links.length;
-        const totalClicks = links.reduce((acc, curr) => acc + (curr.clicks || 0), 0);
+            const links = linksSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any }));
+            const currentLink = shortId ? links.find(l => l.shortId === shortId) : null;
 
-        // Get clicks over time (last 30 days)
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            const totalLinks = links.length;
+            const totalClicks = shortId && currentLink ? (currentLink.clicks || 0) : links.reduce((acc, curr) => acc + (curr.clicks || 0), 0);
 
-        const clicksSnapshot = await this.db.collection('link_clicks')
-            .where('userId', '==', userId)
-            .where('timestamp', '>=', thirtyDaysAgo)
-            .orderBy('timestamp', 'asc')
-            .get();
+            // 2. Lấy dữ liệu click (Chỉ lọc theo userId để tránh lỗi Index)
+            // Lọc theo thời gian và shortId sẽ thực hiện trong bộ nhớ
+            const thirtyDaysAgo = new Date();
+            thirtyDaysAgo.setHours(0, 0, 0, 0);
+            thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-        const clicksByDate: Record<string, number> = {};
-        clicksSnapshot.docs.forEach(doc => {
-            const date = (doc.data().timestamp as admin.firestore.Timestamp)?.toDate()?.toLocaleDateString('vi-VN') || 'N/A';
-            clicksByDate[date] = (clicksByDate[date] || 0) + 1;
-        });
+            const clicksSnapshot = await this.db.collection('link_clicks')
+                .where('userId', '==', userId)
+                .get();
 
-        const timelineData = Object.entries(clicksByDate).map(([date, count]) => ({
-            date,
-            clicks: count
-        }));
+            const clicksByDate: Record<string, number> = {};
 
-        // Sort links by clicks for top performing
-        const topLinks = [...links]
-            .sort((a, b) => (b.clicks || 0) - (a.clicks || 0))
-            .slice(0, 5)
-            .map(l => ({
-                shortId: l.shortId,
-                originalUrl: l.originalUrl,
-                clicks: l.clicks
-            }));
+            clicksSnapshot.docs.forEach(doc => {
+                const data = doc.data();
+                if (!data.timestamp) return;
 
-        return {
-            totalLinks,
-            totalClicks,
-            timelineData,
-            topLinks,
-            averageClicks: totalLinks > 0 ? (totalClicks / totalLinks).toFixed(1) : 0
-        };
+                const clickDate = (data.timestamp as admin.firestore.Timestamp).toDate();
+
+                // Lọc theo thời gian (30 ngày gần nhất)
+                if (clickDate < thirtyDaysAgo) return;
+
+                // Lọc theo shortId nếu có yêu cầu
+                if (shortId && data.shortId !== shortId) return;
+
+                // Format ngày DD/MM/YYYY cố định
+                const day = clickDate.getDate().toString().padStart(2, '0');
+                const month = (clickDate.getMonth() + 1).toString().padStart(2, '0');
+                const year = clickDate.getFullYear();
+                const dateKey = `${day}/${month}/${year}`;
+
+                clicksByDate[dateKey] = (clicksByDate[dateKey] || 0) + 1;
+            });
+
+            // 3. Tạo dữ liệu timeline cho biểu đồ
+            const timelineData = [];
+            for (let i = 29; i >= 0; i--) {
+                const d = new Date();
+                d.setDate(d.getDate() - i);
+                const day = d.getDate().toString().padStart(2, '0');
+                const month = (d.getMonth() + 1).toString().padStart(2, '0');
+                const year = d.getFullYear();
+                const dateKey = `${day}/${month}/${year}`;
+
+                timelineData.push({
+                    date: dateKey,
+                    clicks: clicksByDate[dateKey] || 0
+                });
+            }
+
+            const topLinks = [...links]
+                .sort((a, b) => (b.clicks || 0) - (a.clicks || 0))
+                .slice(0, 10)
+                .map(l => ({
+                    shortId: l.shortId,
+                    originalUrl: l.originalUrl,
+                    clicks: l.clicks || 0
+                }));
+
+            return {
+                totalLinks,
+                totalClicks,
+                timelineData,
+                topLinks,
+                linksList: links.map(l => ({ shortId: l.shortId, originalUrl: l.originalUrl })),
+                averageClicks: totalLinks > 0 ? (totalClicks / totalLinks).toFixed(1) : 0,
+                currentLink: currentLink ? {
+                    shortId: currentLink.shortId,
+                    originalUrl: currentLink.originalUrl,
+                    createdAt: currentLink.createdAt
+                } : null
+            };
+        } catch (error) {
+            console.error("Lỗi getAnalytics:", error);
+            throw error;
+        }
     }
 }

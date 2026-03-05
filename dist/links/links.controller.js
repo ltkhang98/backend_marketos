@@ -29,8 +29,8 @@ let LinksController = class LinksController {
     async deleteLink(shortId, userId) {
         return this.linksService.deleteLink(shortId, userId);
     }
-    async getAnalytics(userId) {
-        return this.linksService.getAnalytics(userId);
+    async getAnalytics(userId, shortId) {
+        return this.linksService.getAnalytics(userId, shortId);
     }
     async redirect(shortId, res) {
         const originalUrl = await this.linksService.getOriginalUrl(shortId);
@@ -66,8 +66,9 @@ __decorate([
 __decorate([
     (0, common_1.Get)('analytics/:userId'),
     __param(0, (0, common_1.Param)('userId')),
+    __param(1, (0, common_1.Query)('shortId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [String, String]),
     __metadata("design:returntype", Promise)
 ], LinksController.prototype, "getAnalytics", null);
 __decorate([
