@@ -1,28 +1,36 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { json, urlencoded, text } from 'express';
+import { ExpressAdapter } from '@nestjs/platform-express';
+import express from 'express';
 
-async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+const server = express();
+
+export const createNestServer = async () => {
+  const app = await NestFactory.create(AppModule, new ExpressAdapter(server));
+
   app.enableCors({
-    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-      const allowedOrigins = [
-        'https://marketos-9b845.web.app',
-        'http://localhost:5173',
-        'https://vibe-code.vercel.app',
-      ];
-      if (!origin || allowedOrigins.some(o => origin.startsWith(o))) {
-        callback(null, true);
-      } else {
-        callback(null, false); // Không báo lỗi Error, chỉ trả về false để NestJS tự xử lý
-      }
-    },
+    origin: [
+      'https://marketos-9b845.web.app',
+      'http://localhost:5173',
+      'https://vibe-code.vercel.app',
+    ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
-    optionsSuccessStatus: 204,
+    allowedHeaders: [
+      'X-CSRF-Token',
+      'X-Requested-With',
+      'Accept',
+      'Accept-Version',
+      'Content-Length',
+      'Content-MD5',
+      'Content-Type',
+      'Date',
+      'X-Api-Version',
+      'Authorization',
+    ],
   });
 
-  // Khôi phục global prefix 'api' nhưng loại trừ các route sepay để tránh lỗi 404 từ SeePay
   app.setGlobalPrefix('api', {
     exclude: [
       'payments/sepay-webhook',
@@ -31,12 +39,20 @@ async function bootstrap() {
     ],
   });
 
-  // Tăng giới hạn dung lượng body để nhận ảnh base64 và HTML
   app.use(json({ limit: '50mb' }));
   app.use(urlencoded({ extended: true, limit: '50mb' }));
-  // Thêm parser text/html và text/plain để xử lý destack save request
   app.use(text({ type: ['text/html', 'text/plain'], limit: '50mb' }));
 
-  await app.listen(process.env.PORT ?? 3000);
-}
-bootstrap();
+  await app.init();
+
+  return server;
+};
+
+// Chạy local development
+createNestServer().then(() => {
+  server.listen(process.env.PORT ?? 3000, () => {
+    console.log(`Server is running on port ${process.env.PORT ?? 3000}`);
+  });
+});
+
+export default server;
