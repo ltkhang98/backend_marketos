@@ -2720,7 +2720,7 @@ export class AiService implements OnModuleInit {
     }
 
     async onModuleInit() {
-        console.log('--- Khởi tạo hệ thống lập lịch tự động hóa AI ---');
+        console.log('--- [SCHEDULER] Khởi tạo hệ thống lập lịch tự động hóa AI ---');
         // Quét mỗi phút
         setInterval(() => {
             this.checkScheduledAutomations();
@@ -2749,11 +2749,14 @@ export class AiService implements OnModuleInit {
             for (const doc of snapshot.docs) {
                 const wf = { id: doc.id, ...doc.data() } as any;
 
+                // Log kiểm tra từng quy trình (chỉ log ở console backend để debug)
+                // console.log(`[SCHEDULER] Checking ${wf.name}: Schedule=${wf.executionTime}, Current=${currentTime}`);
+
                 // Kiểm tra xem đã đến giờ chạy chưa
                 if (wf.executionTime === currentTime) {
                     // Kiểm tra xem ngày hôm nay đã chạy chưa để tránh chạy lặp trong cùng 1 phút
                     if (wf.lastRunDate !== currentDate) {
-                        console.log(`--- [SCHEDULER] Đang tự động chạy quy trình: ${wf.name} (${wf.id}) ---`);
+                        console.log(`--- [SCHEDULER] ĐẾN GIỜ! Đang tự động chạy quy trình: ${wf.name} (${wf.id}) ---`);
                         await this.runAutomationById(wf.id, wf.userId);
 
                         // Cập nhật ngày chạy gần nhất

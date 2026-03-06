@@ -2422,7 +2422,7 @@ let AiService = class AiService {
         return { success: true };
     }
     async onModuleInit() {
-        console.log('--- Khởi tạo hệ thống lập lịch tự động hóa AI ---');
+        console.log('--- [SCHEDULER] Khởi tạo hệ thống lập lịch tự động hóa AI ---');
         setInterval(() => {
             this.checkScheduledAutomations();
         }, 60 * 1000);
@@ -2447,7 +2447,7 @@ let AiService = class AiService {
                 const wf = { id: doc.id, ...doc.data() };
                 if (wf.executionTime === currentTime) {
                     if (wf.lastRunDate !== currentDate) {
-                        console.log(`--- [SCHEDULER] Đang tự động chạy quy trình: ${wf.name} (${wf.id}) ---`);
+                        console.log(`--- [SCHEDULER] ĐẾN GIỜ! Đang tự động chạy quy trình: ${wf.name} (${wf.id}) ---`);
                         await this.runAutomationById(wf.id, wf.userId);
                         await doc.ref.update({
                             lastRunDate: currentDate
