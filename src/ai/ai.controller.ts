@@ -44,6 +44,12 @@ export class AiController {
     }
 
     @UseGuards(FirebaseGuard)
+    @Post('generate-smart-banner')
+    async generateSmartBanner(@Body() body: any, @Req() req: any) {
+        return this.aiService.generateSmartBanner(body, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
     @Post('scrape-product')
     async scrapeProduct(@Body() body: { url: string }, @Req() req: any) {
         return this.aiService.scrapeProductData(body.url, req.user.uid);

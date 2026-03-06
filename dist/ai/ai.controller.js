@@ -44,6 +44,9 @@ let AiController = class AiController {
     async generateMockup(body, req) {
         return this.aiService.generateImageMockup(body.prompt, body.productImage, body.modelImage, body.aspectRatio, req.user.uid);
     }
+    async generateSmartBanner(body, req) {
+        return this.aiService.generateSmartBanner(body, req.user.uid);
+    }
     async scrapeProduct(body, req) {
         return this.aiService.scrapeProductData(body.url, req.user.uid);
     }
@@ -236,6 +239,15 @@ __decorate([
     __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "generateMockup", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('generate-smart-banner'),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "generateSmartBanner", null);
 __decorate([
     (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
     (0, common_1.Post)('scrape-product'),

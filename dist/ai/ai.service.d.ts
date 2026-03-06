@@ -53,6 +53,19 @@ export declare class AiService implements OnModuleInit {
     generateImageMockup(originalPrompt: string, productImage?: string, modelImage?: string, aspectRatio?: string, userId?: string): Promise<{
         url: string;
     }>;
+    private resolveBase64Image;
+    generateSmartBanner(data: {
+        productImage: string;
+        refImage?: string;
+        brandName: string;
+        slogan: string;
+        price: string;
+        style: string;
+        aspectRatio: string;
+        quality: string;
+    }, userId: string): Promise<{
+        url: string;
+    }>;
     private uploadBase64ToStorage;
     generateMarketingPlan(data: {
         productName: string;

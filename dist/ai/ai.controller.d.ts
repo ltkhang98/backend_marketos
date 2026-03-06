@@ -18,6 +18,9 @@ export declare class AiController {
     }, req: any): Promise<{
         url: string;
     }>;
+    generateSmartBanner(body: any, req: any): Promise<{
+        url: string;
+    }>;
     scrapeProduct(body: {
         url: string;
     }, req: any): Promise<any>;
