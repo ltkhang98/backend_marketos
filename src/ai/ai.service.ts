@@ -1146,6 +1146,7 @@ export class AiService implements OnModuleInit {
 
     async generateSmartBanner(data: {
         productImage: string;
+        modelImage?: string;
         refImage?: string;
         brandName: string;
         slogan: string;
@@ -1155,17 +1156,14 @@ export class AiService implements OnModuleInit {
         aspectRatio: string;
         quality: string;
     }, userId: string): Promise<{ url: string }> {
-        if (!data.productImage && !data.refImage) {
-            throw new BadRequestException('Vui lòng cung cấp ít nhất một hình ảnh (ảnh sản phẩm hoặc ảnh tham chiếu).');
-        }
-
         try {
             console.log(`--- Smart Banner Generation Starting for user: ${userId} ---`);
 
             const prodBase64 = await this.resolveBase64Image(data.productImage);
+            const modelBase64 = await this.resolveBase64Image(data.modelImage);
             const refBase64 = await this.resolveBase64Image(data.refImage);
 
-            if (!prodBase64 && !refBase64) {
+            if (!prodBase64 && !refBase64 && !modelBase64) {
                 throw new BadRequestException('Không thể xử lý hình ảnh đầu vào. Vui lòng kiểm tra định dạng ảnh.');
             }
 
@@ -1185,39 +1183,67 @@ export class AiService implements OnModuleInit {
 
             const styleDesc = stylePrompts[data.style] || stylePrompts['Professional'];
 
+            // Define input scenario
+            const hasProduct = !!prodBase64;
+            const hasModel = !!modelBase64;
+
+            // Scenario-based instructions
+            let integrationInstruction = "";
+            if (hasProduct && !hasModel) {
+                integrationInstruction = `
+                    1. PRODUCT-ONLY STRATEGY: Treat the product as a premium centerpiece in a high-end commercial photoshoot.
+                    2. PRODUCT RIGIDITY: Absolute fidelity to the product's design, logo, and form. Preserve every micro-detail and material reflection.
+                    3. SCENE HARMONY: Create a 3D environment with global illumination where the product interacts realistically with light and shadows, following the layout vibe of the REFERENCE banner.
+                `;
+            } else if (!hasProduct && hasModel) {
+                integrationInstruction = `
+                    1. BRAND AMBASSADOR STRATEGY: The model is the face of the brand. Focus on high-fashion editorial aesthetics.
+                    2. BIOMETRIC LOCK: DO NOT ALTER THE FACE. The identity must be 100% matched to the MODEL image. Skin texture must be realistic, using high-end retouching techniques.
+                    3. STUDIO INTEGRATION: Surround the model with a cinematic environment, using rim lighting and depth of field inspired by the REFERENCE image.
+                `;
+            } else if (hasProduct && hasModel) {
+                integrationInstruction = `
+                    1. LIFESTYLE ADVERTISING STRATEGY: Masterfully combine both the product and the model to tell a cohesive brand story.
+                    2. ASSET FIDELITY: 
+                       - PRODUCT: Exact replica of form and branding.
+                       - MODEL FACE: Perfect preservation of facial features and identity.
+                    3. CINEMATIC INTERACTION: Deep emotional connection between the model and the product (e.g., sophisticated holding, elegant posing).
+                    4. SPATIAL DESIGN: Use advanced visual hierarchy, placing assets according to the REFERENCE layout with realistic ambient occlusion.
+                `;
+            } else {
+                integrationInstruction = "Create an abstract, high-end thematic banner focusing on premium brand elements and artistic layouts.";
+            }
+
             // Construct Mega Prompt for Enhancement (Senior Graphic Designer Persona)
             const megaPrompt = `
-                ROLE: Senior Graphic Designer & Advertising Expert.
-                TASK: Create a professional marketing banner for "${data.brandName}".
+                ROLE: World-Class Art Director & Commercial Photographer.
+                TASK: Synthesize a masterpiece advertisement for "${data.brandName}".
                 
-                CREATIVE DIRECTION:
-                1. STYLE REFERENCE: Analyze composition, color palette, lighting, and typography vibe from the reference image. Follow it closely as an artistic guideline.
-                2. PRODUCT INTEGRATION: The product MUST be the heart of the design. Seamlessly blend it with realistic shadows and lighting matching the environment.
-                3. ENVIRONMENT: ${data.style === 'phong cách thiên nhiên' ? 'Natural organic environment, lush greens, soft warm sunlight, professional bokeh' : styleDesc}.
-                4. TEXT ACCURACY: Ensure all text is rendered CLEARLY and EXACTLY with correct Vietnamese diacritics. No spelling errors allowed.
-                5. MASTERPIECE QUALITY: Ensure it feels like a finished marketing asset, not a crude collage. Maintain product integrity.
+                ARTISTIC GUIDELINES:
+                1. ARCHITECTURAL COMPOSITION: Use the golden ratio and sophisticated visual hierarchy. Avoid clutter.
+                2. LIGHTING & ATMOSPHERE: Implement 3-point studio lighting, cinematic rim lighting, volumetric fog, and global illumination. ${data.style === 'phong cách thiên nhiên' ? 'Soft natural sunbeams with professional bokeh' : styleDesc}.
+                3. MATERIALITY: Emphasize hyper-realistic textures—metallic luster, soft fabric weaves, or high-gloss finishes. Use 8k resolution standards.
+                ${integrationInstruction}
+                4. CAYENNE POST-PROCESSING: Cinematic color grading, sharp focus on primary assets, and professional advertising retouching.
+                5. TYPOGRAPHIC LAYOUT: Visualize clean, modern typography placement following the brand name: "${data.brandName}", tagline: "${data.slogan}", and offer: "${data.price}".
                 
-                BRAND MESSAGING:
-                - Brand/Product Name: "${data.brandName}" (Render this large and clear)
-                - Slogan/Message: "${data.slogan}"
-                - Price/Offer: "${data.price}"
-                - Product Details: ${data.details || 'N/A'}
-                
-                OUTPUT: High-fidelity commercial photography aesthetic with professional typography space. Typography must be readable and aesthetically integrated.
+                BRAND DNA:
+                - Name: "${data.brandName}" | Messaging: "${data.slogan}" | CTA/Offer: "${data.price}"
             `;
 
             const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
             let promptParts: any[] = [
-                { text: `Create a highly descriptive image generation prompt based on this creative brief: ${megaPrompt}. Focus on lighting, environment, and how the text and product interact. Return ONLY the English prompt, max 100 words.` }
+                {
+                    text: `Craft an evocative, highly-detailed English image generation prompt for an AI model based on this art direction: ${megaPrompt}.
+                FOCUS ON: Visual descriptors, high-end photography terms, lighting specifics, and composition techniques.
+                IMPORTANT: Enforce "ASSET IDENTITY PRESERVATION" for products and faces.
+                RETURN: Only the prompt text, no meta-talk, max 160 words.` }
             ];
 
-            if (prodBase64) {
-                promptParts.push({ inlineData: { data: prodBase64, mimeType: "image/jpeg" } });
-            }
-            if (refBase64) {
-                promptParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
-            }
+            if (prodBase64) promptParts.push({ inlineData: { data: prodBase64, mimeType: "image/jpeg" } });
+            if (refBase64) promptParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
+            if (modelBase64) promptParts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
 
             let finalPrompt = "";
             try {
@@ -1225,13 +1251,18 @@ export class AiService implements OnModuleInit {
                 finalPrompt = resultEnhance.response.text().replace(/[*"`]/g, '').trim();
             } catch (err) {
                 console.warn("Prompt enhancement failed, using fallback:", err.message);
-                finalPrompt = `A professional commercial banner for ${data.brandName} showing ${data.slogan}. ${styleDesc}, 8k resolution, commercial photography.`;
+                finalPrompt = `Professional commercial banner for ${data.brandName}. ${styleDesc}, inspired by reference, preserve original assets.`;
             }
 
             console.log('--- Smart Banner Enhanced Prompt:', finalPrompt);
 
-            // Now perform actual generation using multiple model attempts
-            const googleModels = ["gemini-2.5-flash-image", "gemini-2.0-flash-exp", "gemini-2.0-flash"];
+            // Now perform actual generation using multiple "Nano Banana" model attempts
+            const googleModels = [
+                "gemini-3.1-flash-image-preview", // Nano Banana 2
+                "gemini-2.5-flash-image",         // Nano Banana Original
+                "gemini-3-pro-image-preview"     // Nano Banana Pro
+            ];
+            let lastErrorMessage = "";
 
             for (const modelName of googleModels) {
                 for (let attempt = 1; attempt <= 2; attempt++) {
@@ -1240,14 +1271,25 @@ export class AiService implements OnModuleInit {
                         const imgModel = this.genAI.getGenerativeModel({ model: modelName });
                         const finalParts: any[] = [{ text: finalPrompt }];
 
-                        if (prodBase64) {
-                            finalParts.push({ inlineData: { data: prodBase64, mimeType: "image/jpeg" } });
-                        }
-                        if (refBase64) {
-                            finalParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
-                        }
+                        if (prodBase64) finalParts.push({ inlineData: { data: prodBase64, mimeType: "image/jpeg" } });
+                        if (refBase64) finalParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
+                        if (modelBase64) finalParts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
 
-                        const result = await imgModel.generateContent({ contents: [{ role: 'user', parts: finalParts }] });
+                        // Add reinforcement directly to generation model
+                        let reinforcement = `ASSET INTEGRITY LOCK & CANVAS SETUP:
+- ASPECT RATIO: You MUST generate this image in ${data.aspectRatio} aspect ratio. 
+- INTEGRITY: Keep the product exactly as shown. KEEP THE MODEL'S FACE 100% IDENTICAL TO SOURCE. `;
+
+                        finalParts.push({ text: reinforcement + "DO NOT ALTER IDENTITIES." });
+
+                        const result = await imgModel.generateContent({
+                            contents: [{ role: 'user', parts: finalParts }],
+                            generationConfig: {
+                                temperature: 0.7,
+                                topP: 0.8,
+                                topK: 40
+                            }
+                        });
                         const candidates = result.response.candidates;
 
                         if (candidates && candidates.length > 0) {
@@ -1255,20 +1297,38 @@ export class AiService implements OnModuleInit {
                             if (imagePart && imagePart.inlineData) {
                                 const storageUrl = await this.uploadBase64ToStorage(imagePart.inlineData.data, imagePart.inlineData.mimeType || 'image/jpeg', userId);
                                 return { url: storageUrl || `data:image/jpeg;base64,${imagePart.inlineData.data}` };
+                            } else {
+                                lastErrorMessage = "Nội dung phản hồi không chứa dữ liệu hình ảnh (có thể bị chặn hoặc lỗi nội dung).";
                             }
+                        } else {
+                            lastErrorMessage = "Không có kết quả nào được trả về từ AI (Candidates empty).";
                         }
                     } catch (e) {
-                        console.warn(`Smart Banner Model ${modelName} fail:`, e.message);
-                        if (attempt === 1 && e.message?.includes('429')) {
-                            await new Promise(r => setTimeout(r, 2000));
+                        lastErrorMessage = e.message || "Lỗi không xác định";
+                        console.error(`Smart Banner Model ${modelName} fail (Attempt ${attempt}):`, e);
+
+                        if (lastErrorMessage.includes('SAFETY') || lastErrorMessage.includes('blocked')) {
+                            console.error(`Bộ lọc an toàn đã được kích hoạt cho mô hình ${modelName}.`);
+                            break;
+                        }
+
+                        if (attempt === 1 && (lastErrorMessage.includes('429') || lastErrorMessage.includes('quota'))) {
+                            console.warn("Đã đạt giới hạn lượt gọi. Đang chờ 5 giây trước khi thử lại...");
+                            await new Promise(r => setTimeout(r, 5000));
                             continue;
                         }
+
+                        if (lastErrorMessage.includes('404')) {
+                            console.error(`Model ${modelName} khong ton tai hoac khong ho tro generateContent.`);
+                            break;
+                        }
+
                         break;
                     }
                 }
             }
 
-            throw new Error('Hệ thống tạo ảnh đang quá tải. Vui lòng thử lại sau.');
+            throw new Error(`Hệ thống tạo ảnh hiện không phản hồi. Vui lòng thử lại sau. (Chi tiết: ${lastErrorMessage})`);
 
         } catch (error) {
             console.error("Smart Banner Error:", error);
