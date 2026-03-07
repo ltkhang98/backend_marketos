@@ -1093,14 +1093,16 @@ let AiService = class AiService {
                 1. STYLE REFERENCE: Analyze composition, color palette, lighting, and typography vibe from the reference image. Follow it closely as an artistic guideline.
                 2. PRODUCT INTEGRATION: The product MUST be the heart of the design. Seamlessly blend it with realistic shadows and lighting matching the environment.
                 3. ENVIRONMENT: ${data.style === 'phong cách thiên nhiên' ? 'Natural organic environment, lush greens, soft warm sunlight, professional bokeh' : styleDesc}.
-                4. MASTERPIECE QUALITY: Ensure it feels like a finished marketing asset, not a crude collage. Maintain product integrity.
+                4. TEXT ACCURACY: Ensure all text is rendered CLEARLY and EXACTLY with correct Vietnamese diacritics. No spelling errors allowed.
+                5. MASTERPIECE QUALITY: Ensure it feels like a finished marketing asset, not a crude collage. Maintain product integrity.
                 
                 BRAND MESSAGING:
-                - Brand/Product: ${data.brandName}
-                - Message: ${data.slogan}
-                - Price/Call to Action: ${data.price}
+                - Brand/Product Name: "${data.brandName}" (Render this large and clear)
+                - Slogan/Message: "${data.slogan}"
+                - Price/Offer: "${data.price}"
+                - Product Details: ${data.details || 'N/A'}
                 
-                OUTPUT: High-fidelity commercial photography aesthetic with professional typography space.
+                OUTPUT: High-fidelity commercial photography aesthetic with professional typography space. Typography must be readable and aesthetically integrated.
             `;
             const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
             let promptParts = [
