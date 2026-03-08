@@ -55,7 +55,8 @@ export declare class AiService implements OnModuleInit {
     }>;
     private resolveBase64Image;
     generateSmartBanner(data: {
-        productImage: string;
+        productImage?: string;
+        productImages?: string[];
         modelImage?: string;
         refImage?: string;
         brandName: string;

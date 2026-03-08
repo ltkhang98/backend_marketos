@@ -84,7 +84,7 @@ let AiService = class AiService {
         AUTO_SUB_PER_MIN: 1000,
         TTS_PER_100_CHARS: 10,
         TEXT_TO_SPEECH: 100,
-        MOCKUP: 500,
+        MOCKUP: 300,
         VIDEO_DOWNLOAD: 200,
         TIKTOK_TRENDING: 200,
         TIKTOK_SCRIPT: 200
@@ -1065,10 +1065,12 @@ let AiService = class AiService {
     async generateSmartBanner(data, userId) {
         try {
             console.log(`--- Smart Banner Generation Starting for user: ${userId} ---`);
-            const prodBase64 = await this.resolveBase64Image(data.productImage);
+            const prodImages = data.productImages || (data.productImage ? [data.productImage] : []);
+            const prodBase64List = await Promise.all(prodImages.map(img => this.resolveBase64Image(img)));
+            const validProdBase64List = prodBase64List.filter(b => b !== null);
             const modelBase64 = await this.resolveBase64Image(data.modelImage);
             const refBase64 = await this.resolveBase64Image(data.refImage);
-            if (!prodBase64 && !refBase64 && !modelBase64) {
+            if (validProdBase64List.length === 0 && !refBase64 && !modelBase64) {
                 throw new common_1.BadRequestException('Không thể xử lý hình ảnh đầu vào. Vui lòng kiểm tra định dạng ảnh.');
             }
             if (userId) {
@@ -1083,14 +1085,20 @@ let AiService = class AiService {
                 'Professional': 'Centered symmetrical composition, balanced corporate aesthetics, clear direct lighting, trustworthy and sharp.'
             };
             const styleDesc = stylePrompts[data.style] || stylePrompts['Professional'];
-            const hasProduct = !!prodBase64;
+            const hasProduct = validProdBase64List.length > 0;
             const hasModel = !!modelBase64;
+            const isMultiProduct = validProdBase64List.length > 1;
             let integrationInstruction = "";
             if (hasProduct && !hasModel) {
+                const prodInstruction = isMultiProduct
+                    ? `PRODUCT-COLLECTION STRATEGY: Treat the set of products as a premium curated collection. Arrange them in a sophisticated, balanced layout (overlap, nested, or staggered) to show variety while maintaining a single cohesive focal point.`
+                    : `PRODUCT-ONLY STRATEGY: Treat the product as a premium centerpiece in a high-end commercial photoshoot.`;
                 integrationInstruction = `
-                    1. PRODUCT-ONLY STRATEGY: Treat the product as a premium centerpiece in a high-end commercial photoshoot.
-                    2. PRODUCT RIGIDITY: Absolute fidelity to the product's design, logo, and form. Preserve every micro-detail and material reflection.
-                    3. SCENE HARMONY: Create a 3D environment with global illumination where the product interacts realistically with light and shadows, following the layout vibe of the REFERENCE banner.
+                    1. ${prodInstruction}
+                    2. LAYOUT BLUEPRINT: Strictly follow the spatial arrangement, composition, and visual weight of the REFERENCE image. If the reference puts the focus on the left, you put it on the left.
+                    3. JOINT PRESENCE: You MUST show ALL the products provided in the source images within this single composition. Create a premium group shot.
+                    4. PRODUCT RIGIDITY: Absolute fidelity to each product's design, logo, and form. Preserve every micro-detail and material reflection.
+                    5. SCENE HARMONY: Create a 3D environment with global illumination where all products interact realistically with light and shadows, mimicking the lighting and depth of the REFERENCE image.
                 `;
             }
             else if (!hasProduct && hasModel) {
@@ -1101,32 +1109,38 @@ let AiService = class AiService {
                 `;
             }
             else if (hasProduct && hasModel) {
+                const prodInstruction = isMultiProduct
+                    ? `the collection of products and the model to tell a cohesive brand story. Arrange products gracefully around or near the model.`
+                    : `the single product and the model to tell a cohesive brand story.`;
                 integrationInstruction = `
-                    1. LIFESTYLE ADVERTISING STRATEGY: Masterfully combine both the product and the model to tell a cohesive brand story.
-                    2. ASSET FIDELITY: 
-                       - PRODUCT: Exact replica of form and branding.
+                    1. LIFESTYLE ADVERTISING STRATEGY: Masterfully combine ${prodInstruction}
+                    2. LAYOUT BLUEPRINT: Treat the REFERENCE image as a strict positional guide. Mirror the exact placement, perspective, and composition of assets (model, product, text) shown in the reference.
+                    3. JOINT PRESENCE: Ensure the model and EVERY provided product appear together in the same frame.
+                    4. ASSET FIDELITY: 
+                       - PRODUCTS: Exact replica of form and branding for every item.
                        - MODEL FACE: Perfect preservation of facial features and identity.
-                    3. CINEMATIC INTERACTION: Deep emotional connection between the model and the product (e.g., sophisticated holding, elegant posing).
-                    4. SPATIAL DESIGN: Use advanced visual hierarchy, placing assets according to the REFERENCE layout with realistic ambient occlusion.
+                    5. CINEMATIC INTERACTION: Deep emotional connection between the model and the products.
+                    6. SPATIAL DESIGN: Use advanced visual hierarchy, placing assets according to the REFERENCE layout with realistic ambient occlusion.
                 `;
             }
             else {
                 integrationInstruction = "Create an abstract, high-end thematic banner focusing on premium brand elements and artistic layouts.";
             }
             const megaPrompt = `
-                ROLE: World-Class Art Director & Commercial Photographer.
-                TASK: Synthesize a masterpiece advertisement for "${data.brandName}".
+                ROLE: World-Class Art Director & Commercial Designer.
+                TASK: Synthesize a masterpiece advertisement for "${data.brandName}" using the REFERENCE image as a strict LAYOUT BLUEPRINT.
                 
                 ARTISTIC GUIDELINES:
-                1. ARCHITECTURAL COMPOSITION: Use the golden ratio and sophisticated visual hierarchy. Avoid clutter.
-                2. LIGHTING & ATMOSPHERE: Implement 3-point studio lighting, cinematic rim lighting, volumetric fog, and global illumination. ${data.style === 'phong cách thiên nhiên' ? 'Soft natural sunbeams with professional bokeh' : styleDesc}.
-                3. MATERIALITY: Emphasize hyper-realistic textures—metallic luster, soft fabric weaves, or high-gloss finishes. Use 8k resolution standards.
+                1. PHYSICAL LAYOUT TRANSCRIPTION: Analyze the REFERENCE strictly as a structural blueprint. Describe the spatial positioning of all subjects, background motifs, and text blocks using descriptive coordinates (e.g., "Main product group positioned in the lower-right third", "Heading centered at the top header area").
+                2. LOGO & TEXT PURGE: ABSOLUTELY IGNORE and EXCLUDE any existing names, logos, slogans, or phone numbers found in the REFERENCE image. Do not use them. Only use the provided BRAND DNA text.
+                3. TYPOGRAPHIC FIDELITY: Mimic the font weight (bold/thin), style (serif/sans-serif), and color scheme of the typography found in the REFERENCE. Describe these styles clearly so they can be reproduced using our text: "${data.brandName}", "${data.slogan}", "${data.price}", and "${data.details}".
+                4. LIGHTING & ATMOSPHERE: Implement the identical lighting quality (e.g. dramatic shadows, soft diffuse light, rim lighting) and color grading from the REFERENCE image. ${data.style === 'phong cách thiên nhiên' ? 'Soft natural sunbeams with professional bokeh' : styleDesc}.
+                5. MATERIALITY: Emphasize hyper-realistic textures—metallic luster, soft fabric weaves, or high-gloss finishes. Use 8k resolution standards.
                 ${integrationInstruction}
-                4. CAYENNE POST-PROCESSING: Cinematic color grading, sharp focus on primary assets, and professional advertising retouching.
-                5. TYPOGRAPHIC LAYOUT: Visualize clean, modern typography placement following the brand name: "${data.brandName}", tagline: "${data.slogan}", and offer: "${data.price}".
+                6. CAYENNE POST-PROCESSING: Cinematic color grading, sharp focus on primary assets, and professional advertising retouching.
                 
-                BRAND DNA:
-                - Name: "${data.brandName}" | Messaging: "${data.slogan}" | CTA/Offer: "${data.price}"
+                BRAND DNA (THE ONLY TEXT ALLOWED):
+                - Name: "${data.brandName}" | Messaging: "${data.slogan}" | CTA/Offer: "${data.price}" | Featured Details: "${data.details}"
             `;
             const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
             let promptParts = [
@@ -1137,8 +1151,11 @@ let AiService = class AiService {
                 RETURN: Only the prompt text, no meta-talk, max 160 words.`
                 }
             ];
-            if (prodBase64)
-                promptParts.push({ inlineData: { data: prodBase64, mimeType: "image/jpeg" } });
+            if (validProdBase64List.length > 0) {
+                validProdBase64List.forEach(base64 => {
+                    promptParts.push({ inlineData: { data: base64, mimeType: "image/jpeg" } });
+                });
+            }
             if (refBase64)
                 promptParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
             if (modelBase64)
@@ -1165,16 +1182,23 @@ let AiService = class AiService {
                         console.log(`--- Trying Model: ${modelName} (Attempt ${attempt}) ---`);
                         const imgModel = this.genAI.getGenerativeModel({ model: modelName });
                         const finalParts = [{ text: finalPrompt }];
-                        if (prodBase64)
-                            finalParts.push({ inlineData: { data: prodBase64, mimeType: "image/jpeg" } });
+                        if (validProdBase64List.length > 0) {
+                            validProdBase64List.forEach(base64 => {
+                                finalParts.push({ inlineData: { data: base64, mimeType: "image/jpeg" } });
+                            });
+                        }
                         if (refBase64)
                             finalParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
                         if (modelBase64)
                             finalParts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
                         let reinforcement = `ASSET INTEGRITY LOCK & CANVAS SETUP:
-- ASPECT RATIO: You MUST generate this image in ${data.aspectRatio} aspect ratio. 
-- INTEGRITY: Keep the product exactly as shown. KEEP THE MODEL'S FACE 100% IDENTICAL TO SOURCE. `;
-                        finalParts.push({ text: reinforcement + "DO NOT ALTER IDENTITIES." });
+- STRUCTURAL MIRROR: The provided REFERENCE image is a physical mold. You MUST mirror its composition, grid, and panel layout EXACTLY.
+- BRANDING PURGE: IGNORE and OVERWRITE all logos, text, and names visible in the REFERENCE pixels.
+- TEXT REPLACEMENT: Inject "${data.brandName}", "${data.slogan}", "${data.price}", "${data.details}" into the EXACT positions where text appears in the reference.
+- ASPECT RATIO: Generate in ${data.aspectRatio}. 
+- JOINT COMPOSITION: Include ALL ${validProdBase64List.length} provided products.
+- INTEGRITY: Keep products and faces identical to source. `;
+                        finalParts.push({ text: reinforcement + "CLONE THE REFERENCE LAYOUT BUT ERASE ALL ITS ORIGINAL CONTENT." });
                         const result = await imgModel.generateContent({
                             contents: [{ role: 'user', parts: finalParts }],
                             generationConfig: {
