@@ -1123,85 +1123,108 @@ let AiService = class AiService {
             const validProdBase64List = prodBase64List.filter(b => b !== null);
             const modelBase64 = await this.resolveBase64Image(data.modelImage);
             const refBase64 = await this.resolveBase64Image(data.refImage);
+            const logoBase64 = await this.resolveBase64Image(data.logoImage);
             if (validProdBase64List.length === 0 && !refBase64 && !modelBase64) {
                 throw new common_1.BadRequestException('Không thể xử lý hình ảnh đầu vào. Vui lòng kiểm tra định dạng ảnh.');
             }
             if (userId) {
                 await this.deductCredits(userId, this.CREDIT_COSTS.SMART_BANNER, 'Thiết kế Banner Studio AI');
             }
+            const effectiveProductName = data.productName || 'Sản phẩm mới';
+            const effectiveCompanyName = data.companyName || 'Công ty mới';
             console.log(`--- Smart Banner Generation (${data.style}, ${data.aspectRatio}) ---`);
             const stylePrompts = {
-                'Minimalism': 'Minimalist aesthetic, clean white space, airy composition, essential elements only, sophisticated simplicity.',
-                'High-Contrast': 'Bold dramatic lighting, deep shadows, vibrant saturated colors, intense visual impact, strong contrast.',
-                'Elegant': 'Soft pastel tones, luxury editorial feel, delicate textures, graceful curves, high-end boutique aesthetic.',
-                'Dynamic': 'Action-oriented, motion blur effects, floating debris/particles, energetic angles, high intensity vibes.',
-                'Professional': 'Centered symmetrical composition, balanced corporate aesthetics, clear direct lighting, trustworthy and sharp.'
+                'Minimalism': 'Thẩm mỹ tối giản, không gian trắng sạch sẽ, bố cục thoáng đãng, chỉ giữ lại các yếu tố thiết yếu, sự tinh tế trong sự đơn giản.',
+                'High-Contrast': 'Ánh sáng nghệ thuật cường độ cao, bóng đổ sâu, màu sắc bão hòa rực rỡ, hiệu ứng thị giác mạnh mẽ, độ tương phản cao.',
+                'Elegant': 'Tông màu pastel nhẹ nhàng, phong cách sang trọng cao cấp, họa tiết tinh xảo, đường nét thanh thoát, thẩm mỹ thiết kế cao cấp.',
+                'Dynamic': 'Tập trung vào hành động, hiệu ứng mờ chuyển động, các hạt/mảnh vỡ lơ lửng, góc quay năng động, nhịp độ mạnh mẽ.',
+                'Professional': 'Bố cục đối xứng ở trung tâm, thẩm mỹ doanh nghiệp chỉn chu, ánh sáng trực tiếp rõ ràng, đáng tin cậy và sắc nét.'
             };
             const styleDesc = stylePrompts[data.style] || stylePrompts['Professional'];
+            const industryPrompts = {
+                "Mỹ phẩm & Làm đẹp": "Bố cục tinh tế, mềm mại, tôn vinh làn da và vẻ đẹp hoàn mỹ. Sản phẩm mỹ phẩm lấp lánh (nếu có), hiệu ứng ánh sáng diệu kỳ (skin-glowing) tôn lên sự trong trẻo.",
+                "Thời trang & May mặc": "Phong cách thời trang cao cấp (High-fashion editorial), tư thế người mẫu đẳng cấp, thể hiện nếp gấp vải và chất liệu chân thực, bối cảnh studio tạp chí thời trang danh tiếng.",
+                "Công nghệ & Điện tử": "Thẩm mỹ thiết kế sản phẩm hiện đại sắc sảo (Tech-aesthetic), ánh sáng ven tinh tế làm nổi bật chất liệu kim loại/kính, hiệu ứng sci-fi hoặc tối giản tương lai.",
+                "Ẩm thực & Nhà hàng": "Chụp ảnh ẩm thực thương mại siêu cận (Commercial Food Photography), chi tiết sắc nét tới từng giọt nước sốt. Ánh sáng ấm áp rực rỡ gợi sự ngon miệng, làn khói nóng bốc lên tự nhiên (nếu là món nóng).",
+                "Bất động sản": "Siêu thực kiến trúc (Architectural Photography), góc chụp mở rộng (Wide-angle focus). Ánh sáng giờ vàng ngập tràn (Golden hour lighting). Không gian sống mơ ước, sang trọng.",
+                "Giáo dục & Đào tạo": "Môi trường học tập chuyên nghiệp, tự tin. Ánh sáng ban ngày sáng bừng (Bright daylight) truyền tải sự rõ ràng, tri thức. Tông màu khơi gợi năng lượng tích cực, trí tuệ.",
+                "Sức khỏe & Y tế": "Phong cách thiết kế sạch sẽ, vô trùng (Clinical clean aesthetics) nhưng toát lên sự tận tâm êm dịu. Tông màu nhạt dễ chịu, ánh sáng khuếch tán mềm mại tạo sự an tâm tuyệt đối.",
+                "Nội thất & Gia dụng": "Nhiếp ảnh sản phẩm phong cách sống (Lifestyle interior). Bài trí ấm cúng, tỉ mỉ, đánh sáng tự nhiên từ cửa sổ tạo bóng nghệ thuật. Không gian sống đẳng cấp, cân bằng.",
+                "Du lịch & Khách sạn": "Cảnh quan kỳ vĩ, bao la. Bầu trời và màu sắc thiên nhiên được tăng cường (Vivid enhancement). Ánh sáng rực rỡ của khu nghỉ dưỡng hạng sang hoặc phong vị phiêu lưu mãn nhãn.",
+                "Sự kiện & Giải trí": "Không khí sôi động náo nhiệt, ánh sáng sân khấu cường độ cao (concert stage lighting, laser, neon spotlight). Cảm giác bùng nổ, đông đúc nhộn nhịp, góc máy hoành tráng năng động.",
+                "Tổng hợp": "Bố cục nghệ thuật sáng tạo mạnh, tối ưu thị giác toàn diện làm bật lên thông điệp chính một cách chuyên nghiệp."
+            };
+            const specificIndustryDesc = data.industry && industryPrompts[data.industry]
+                ? `\n                7. ĐẶC TRƯNG NGÀNH (${data.industry.toUpperCase()}): ${industryPrompts[data.industry]}`
+                : "";
             const hasProduct = validProdBase64List.length > 0;
             const hasModel = !!modelBase64;
             const isMultiProduct = validProdBase64List.length > 1;
             let integrationInstruction = "";
             if (hasProduct && !hasModel) {
                 const prodInstruction = isMultiProduct
-                    ? `PRODUCT-COLLECTION STRATEGY: Treat the set of products as a premium curated collection. Arrange them in a sophisticated, balanced layout (overlap, nested, or staggered) to show variety while maintaining a single cohesive focal point.`
-                    : `PRODUCT-ONLY STRATEGY: Treat the product as a premium centerpiece in a high-end commercial photoshoot.`;
+                    ? `CHIẾN LƯỢC BỘ SƯU TẬP SẢN PHẨM: Xử lý nhóm sản phẩm như một bộ sưu tập cao cấp. Sắp xếp chúng trong một bố cục cân xứng (chồng chéo, lồng ghép hoặc so le) để thể hiện sự đa dạng nhưng vẫn giữ chung một điểm nhấn cốt lõi.`
+                    : `CHIẾN LƯỢC SẢN PHẨM ĐƠN LẺ: Xử lý sản phẩm như một trung tâm cao cấp trong một buổi chụp hình thương mại chất lượng cao.`;
                 integrationInstruction = `
                     1. ${prodInstruction}
-                    2. LAYOUT BLUEPRINT: Strictly follow the spatial arrangement, composition, and visual weight of the REFERENCE image. If the reference puts the focus on the left, you put it on the left.
-                    3. JOINT PRESENCE: You MUST show ALL the products provided in the source images within this single composition. Create a premium group shot.
-                    4. PRODUCT RIGIDITY: Absolute fidelity to each product's design, logo, and form. Preserve every micro-detail and material reflection.
-                    5. SCENE HARMONY: Create a 3D environment with global illumination where all products interact realistically with light and shadows, mimicking the lighting and depth of the REFERENCE image.
+                    2. BẢN THIẾT KẾ BỐ CỤC: Tuân thủ nghiêm ngặt sự sắp xếp không gian, bố cục và trọng lượng thị giác của hình ảnh THAM KHẢO. Nếu hình tham khảo đặt trọng tâm bên trái, bạn hãy đặt ở bên trái.
+                    3. SỰ HIỆN DIỆN CHUNG: Bạn PHẢI hiển thị TẤT CẢ các sản phẩm được cung cấp trong các hình ảnh nguồn trong một bố cục duy nhất này. Tạo một bức ảnh nhóm cao cấp.
+                    4. ĐỘ CHÍNH XÁC CỦA SẢN PHẨM: Đảm bảo độ trung thực tuyệt đối với thiết kế, logo và hình dáng của từng sản phẩm. Giữ nguyên từng chi tiết nhỏ và ánh phản xạ của vật liệu.
+                    5. SỰ HÀI HÒA CỦA BỐI CẢNH: Tạo một môi trường 3D với ánh sáng toàn cục, nơi tất cả các sản phẩm tương tác thực tế với ánh sáng và bóng đổ, mô phỏng ánh sáng và chiều sâu của hình ảnh THAM KHẢO.
                 `;
             }
             else if (!hasProduct && hasModel) {
                 integrationInstruction = `
-                    1. BRAND AMBASSADOR STRATEGY: The model is the face of the brand. Focus on high-fashion editorial aesthetics.
-                    2. BIOMETRIC LOCK: DO NOT ALTER THE FACE. The identity must be 100% matched to the MODEL image. Skin texture must be realistic, using high-end retouching techniques.
-                    3. STUDIO INTEGRATION: Surround the model with a cinematic environment, using rim lighting and depth of field inspired by the REFERENCE image.
+                    1. CHIẾN LƯỢC ĐẠI SỨ THƯƠNG HIỆU: Người mẫu là gương mặt đại diện của thương hiệu. Tập trung vào tính thẩm mỹ biên tập thời trang cao cấp.
+                    2. KHÓA ĐẶC ĐIỂM SINH TRẮC HỌC: KHÔNG ĐƯỢC THAY ĐỔI KHUÔN MẶT gốc. Danh tính phải khớp 100% với hình ảnh NGƯỜI MẪU. Kết cấu da phải chân thực, sử dụng các kỹ thuật chỉnh sửa cao cấp.
+                    3. TÍCH HỢP STUDIO: Đặt người mẫu vào một môi trường điện ảnh, sử dụng ánh sáng ven và độ sâu trường ảnh lấy cảm hứng từ hình ảnh THAM KHẢO.
                 `;
             }
             else if (hasProduct && hasModel) {
                 const prodInstruction = isMultiProduct
-                    ? `the collection of products and the model to tell a cohesive brand story. Arrange products gracefully around or near the model.`
-                    : `the single product and the model to tell a cohesive brand story.`;
+                    ? `bộ sưu tập sản phẩm và người mẫu để kể một câu chuyện thương hiệu gắn kết. Giữ các sản phẩm ở gần hoặc được tương tác với người mẫu một cách tự nhiên.`
+                    : `sản phẩm và người mẫu để kể một câu chuyện thương hiệu gắn kết.`;
                 integrationInstruction = `
-                    1. LIFESTYLE ADVERTISING STRATEGY: Masterfully combine ${prodInstruction}
-                    2. LAYOUT BLUEPRINT: Treat the REFERENCE image as a strict positional guide. Mirror the exact placement, perspective, and composition of assets (model, product, text) shown in the reference.
-                    3. JOINT PRESENCE: Ensure the model and EVERY provided product appear together in the same frame.
-                    4. ASSET FIDELITY: 
-                       - PRODUCTS: Exact replica of form and branding for every item.
-                       - MODEL FACE: Perfect preservation of facial features and identity.
-                    5. CINEMATIC INTERACTION: Deep emotional connection between the model and the products.
-                    6. SPATIAL DESIGN: Use advanced visual hierarchy, placing assets according to the REFERENCE layout with realistic ambient occlusion.
+                    1. CHIẾN LƯỢC QUẢNG CÁO PHONG CÁCH SỐNG: Kết hợp một cách đầy nghệ thuật giữa ${prodInstruction}
+                    2. BẢN THIẾT KẾ BỐ CỤC: Coi hình ảnh THAM KHẢO như một hướng dẫn bố cục nghiêm ngặt. Phản chiếu lại chính xác vị trí, góc nhìn và thành phần của các đối tượng (người mẫu, sản phẩm, văn bản) được hiển thị trong ảnh tham khảo.
+                    3. SỰ HIỆN DIỆN CHUNG: Đảm bảo người mẫu và MỌI sản phẩm được cung cấp xuất hiện cùng nhau trong cùng một khung hình ảnh.
+                    4. ĐỘ CHÍNH XÁC CỦA ĐỐI TƯỢNG: 
+                       - SẢN PHẨM: Bản sao chính xác về hình dáng và nhãn hiệu cho từng mặt hàng.
+                       - KHUÔN MẶT NGƯỜI MẪU: Giữ hoàn hảo các đặc điểm khuôn mặt và danh tính gốc.
+                    5. SỰ TƯƠNG TÁC ĐIỆN ẢNH: Thiết lập sự liên kết cảm xúc tự nhiên giữa người mẫu và các sản phẩm.
+                    6. THIẾT KẾ KHÔNG GIAN: Sử dụng hệ thống phân cấp tầng hình ảnh nâng cao, sắp xếp các đối tượng theo bố cục THAM KHẢO với kỹ thuật đổ bóng bao quanh chân thực.
                 `;
             }
             else {
-                integrationInstruction = "Create an abstract, high-end thematic banner focusing on premium brand elements and artistic layouts.";
+                integrationInstruction = "Tạo một banner theo chủ đề nghệ thuật và cao cấp, tập trung vào thiết lập bố cục không gian trừu tượng nhưng chuyên nghiệp.";
             }
             const megaPrompt = `
-                ROLE: World-Class Art Director & Commercial Designer.
-                TASK: Synthesize a masterpiece advertisement for "${data.brandName}" using the REFERENCE image as a strict LAYOUT BLUEPRINT.
+                VAI TRÒ: Giám đốc Nghệ thuật & Nhà thiết kế Thương mại Đẳng Cấp Thế Giới.
+                NHIỆM VỤ: Tổng hợp một quảng cáo kiệt tác cho thương hiệu "${effectiveCompanyName}" và sản phẩm/sự kiện "${effectiveProductName}" bằng cách sử dụng hình ảnh THAM KHẢO làm BẢN THIẾT KẾ BỐ CỤC nghiêm ngặt.
                 
-                ARTISTIC GUIDELINES:
-                1. PHYSICAL LAYOUT TRANSCRIPTION: Analyze the REFERENCE strictly as a structural blueprint. Describe the spatial positioning of all subjects, background motifs, and text blocks using descriptive coordinates (e.g., "Main product group positioned in the lower-right third", "Heading centered at the top header area").
-                2. LOGO & TEXT PURGE: ABSOLUTELY IGNORE and EXCLUDE any existing names, logos, slogans, or phone numbers found in the REFERENCE image. Do not use them. Only use the provided BRAND DNA text.
-                3. TYPOGRAPHIC FIDELITY: Mimic the font weight (bold/thin), style (serif/sans-serif), and color scheme of the typography found in the REFERENCE. Describe these styles clearly so they can be reproduced using our text: "${data.brandName}", "${data.slogan}", "${data.price}", and "${data.details}".
-                4. LIGHTING & ATMOSPHERE: Implement the identical lighting quality (e.g. dramatic shadows, soft diffuse light, rim lighting) and color grading from the REFERENCE image. ${data.style === 'phong cách thiên nhiên' ? 'Soft natural sunbeams with professional bokeh' : styleDesc}.
-                5. MATERIALITY: Emphasize hyper-realistic textures—metallic luster, soft fabric weaves, or high-gloss finishes. Use 8k resolution standards.
+                HƯỚNG DẪN NGHỆ THUẬT:
+                1. SAO CHÉP BỐ CỤC VẬT LÝ: Phân tích hình ảnh THAM KHẢO một cách nghiêm túc như một bản thiết kế cấu trúc. Nhận thức vị trí không gian của tất cả các đối tượng chính, họa tiết nền và các khối văn bản để làm chuẩn mực.
+                2. LOẠI BỎ LOGO & VĂN BẢN (NGOẠI TRỪ LOGO CHÚNG TÔI CUNG CẤP NẾU CÓ): TUYỆT ĐỐI BỎ QUA và LOẠI TRỪ bất kỳ tên, logo cũ, slogan hoặc số điện thoại hiện có nào được tìm thấy trong hình ảnh THAM KHẢO. Hãy sử dụng logo mới được cung cấp (nếu có) và dữ liệu DNA THƯƠNG HIỆU được quy định.
+                3. ĐỘ CHÍNH XÁC CỦA KIỂU CHỮ: Mô phỏng lại độ dày (đậm/mảnh), kiểu (có chân/không chân) và thiết lập bảng màu của kiểu chữ được tìm thấy trong ảnh THAM KHẢO để đặt các dòng chữ của chúng ta: Tên Công ty: "${effectiveCompanyName}", Tiêu đề chính/Tên sản phẩm: "${effectiveProductName}", Thông điệp: "${data.slogan}", Ưu đãi/Giá/Thời gian: "${data.price}", và Chi tiết: "${data.details}".
+                4. ÁNH SÁNG & BẦU KHÔNG KHÍ: Áp dụng sắc thái ánh sáng (bóng đổ sâu, ánh sáng lan tỏa hay ánh sáng ven viền) và màu sắc từ hình ảnh THAM KHẢO. Phối hợp với: ${data.style === 'phong cách thiên nhiên' ? 'Ánh nắng mặt trời tự nhiên, mềm mại, bokeh điện ảnh' : styleDesc}.
+                5. CHẤT CẢM VẬT LÝ: Sử dụng kết cấu siêu thực — độ bóng kim loại, sự đan xen của vải mềm mại, hoặc các bề mặt siêu mịn. Sử dụng tiêu chuẩn độ phân giải 8k.
                 ${integrationInstruction}
-                6. CAYENNE POST-PROCESSING: Cinematic color grading, sharp focus on primary assets, and professional advertising retouching.
+                6. HẬU KỲ: Áp dụng phân loại màu điện ảnh, lấy nét sắc nét vào đối tượng chính và retouch quảng cáo chuyên nghiệp.${specificIndustryDesc}
                 
-                BRAND DNA (THE ONLY TEXT ALLOWED):
-                - Name: "${data.brandName}" | Messaging: "${data.slogan}" | CTA/Offer: "${data.price}" | Featured Details: "${data.details}"
+                DNA THƯƠNG HIỆU (YÊU CẦU CHỈ ĐƯỢC PHÉP SỬ DỤNG VĂN BẢN SAU):
+                - Tên Công ty / Thương hiệu: "${effectiveCompanyName}"
+                - Tên Sản phẩm / Tiêu đề Sự kiện: "${effectiveProductName}"
+                - Thông điệp chính: "${data.slogan}"
+                - Giá / Thời gian / Ưu đãi: "${data.price}"
+                - Chi tiết phụ trợ: "${data.details}"
             `;
             const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
             let promptParts = [
                 {
-                    text: `Craft an evocative, highly-detailed English image generation prompt for an AI model based on this art direction: ${megaPrompt}.
-                FOCUS ON: Visual descriptors, high-end photography terms, lighting specifics, and composition techniques.
-                IMPORTANT: Enforce "ASSET IDENTITY PRESERVATION" for products and faces.
-                RETURN: Only the prompt text, no meta-talk, max 160 words.`
+                    text: `Dịch và Viết lại thành một Lời nhắc (Prompt) tiếng Anh thật chi tiết, có chiều sâu về khả năng render và tạo ảnh AI xuất sắc dựa vào định hướng nghệ thuật sau: ${megaPrompt}.
+                TRỌNG TÂM: Tập trung vào từ vựng nhiếp ảnh, mô tả vật liệu (textures), ánh sáng, và cấu trúc không gian hình học.
+                QUAN TRỌNG: TUYỆT ĐỐI đảm bảo quy tắc "BẢO TỒN HOÀN TOÀN ĐỐI TƯỢNG", SAO CHÉP Y HỆT 100% KHUÔN MẶT người mẫu (Face Identity, Facial Features) và sản phẩm, CẤM tuyệt đối không được tự ý vẽ AI ra khuôn mặt người khác.
+                YÊU CẦU ĐẦU RA: Chỉ xả ra đoạn Text duy nhất chứa Prompt bằng tiếng Anh, không thêm metadata hay nói chuyện, max 160 words.`
                 }
             ];
             if (validProdBase64List.length > 0) {
@@ -1213,6 +1236,8 @@ let AiService = class AiService {
                 promptParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
             if (modelBase64)
                 promptParts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
+            if (logoBase64)
+                promptParts.push({ inlineData: { data: logoBase64, mimeType: "image/png" } });
             let finalPrompt = "";
             try {
                 const resultEnhance = await enhanceModel.generateContent(promptParts);
@@ -1220,7 +1245,7 @@ let AiService = class AiService {
             }
             catch (err) {
                 console.warn("Prompt enhancement failed, using fallback:", err.message);
-                finalPrompt = `Professional commercial banner for ${data.brandName}. ${styleDesc}, inspired by reference, preserve original assets.`;
+                finalPrompt = `Professional commercial banner for ${effectiveCompanyName} and ${effectiveProductName}. ${styleDesc}, inspired by reference, preserve original assets. High quality rendering, cinematic lighting.`;
             }
             console.log('--- Smart Banner Enhanced Prompt:', finalPrompt);
             const googleModels = [
@@ -1244,13 +1269,16 @@ let AiService = class AiService {
                             finalParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
                         if (modelBase64)
                             finalParts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
-                        let reinforcement = `ASSET INTEGRITY LOCK & CANVAS SETUP:
-- STRUCTURAL MIRROR: The provided REFERENCE image is a physical mold. You MUST mirror its composition, grid, and panel layout EXACTLY.
-- BRANDING PURGE: IGNORE and OVERWRITE all logos, text, and names visible in the REFERENCE pixels.
-- TEXT REPLACEMENT: Inject "${data.brandName}", "${data.slogan}", "${data.price}", "${data.details}" into the EXACT positions where text appears in the reference.
-- ASPECT RATIO: Generate in ${data.aspectRatio}. 
-- JOINT COMPOSITION: Include ALL ${validProdBase64List.length} provided products.
-- INTEGRITY: Keep products and faces identical to source. `;
+                        if (logoBase64)
+                            finalParts.push({ inlineData: { data: logoBase64, mimeType: "image/png" } });
+                        let reinforcement = `KHOÁ ĐẶC TÍNH VÀ YÊU CẦU:
+- PHẢN CHIẾU CẤU TRÚC BỐ CỤC: Hình ảnh THAM KHẢO được xem như bộ khung xương. BẠN PHẢI bám sát vị trí, lưới (grid) và tỉ lệ của ảnh tham khảo.
+- ĐÀO THẢI SAO CHÉP: BỎ QUA HOÀN TOÀN và XÓA SẠCH MỌI thương hiệu, văn bản, text cũ có sẵn trong ảnh tham khảo ra khỏi hình ảnh mới.
+- BƠM VĂN BẢN MỚI${logoBase64 ? ' VÀ LOGO' : ''}: Thay thế vị trí logo cũ bằng logo chúng tôi cung cấp. Chỉ thêm các đoạn text sau: "${effectiveCompanyName}", "${effectiveProductName}", "${data.slogan}", "${data.price}", "${data.details}" vào những vùng mà ảnh mẫu chứa text. 
+- TỈ LỆ KHUNG: Yêu cầu áp dụng tỉ lệ ${data.aspectRatio}. 
+- SỰ LIÊN KẾT: Tích hợp đầy đủ ${validProdBase64List.length} sản phẩm cung cấp.
+- ĐỘ TRUNG THỰC KHUÔN MẶT: Đặt lệnh ưu tiên cao nhất (HIGH PRIORITY). BẮT BUỘC phân tích và KIẾN TRÚC LẠI 100% NHẬN DẠNG KHUÔN MẶT (Face Identity), đường nét, thần thái của người mẫu gốc được tải lên. KHÔNG ĐƯỢC PHÉP THAY ĐỔI hay tự vẽ ra người mẫu khác.
+- ĐỘ TRUNG THỰC SẢN PHẨM: Cấm thay đổi màu sắc hay biến dạng tỷ lệ của Sản phẩm${logoBase64 ? ' / Logo' : ''}. `;
                         finalParts.push({ text: reinforcement + "CLONE THE REFERENCE LAYOUT BUT ERASE ALL ITS ORIGINAL CONTENT." });
                         const result = await imgModel.generateContent({
                             contents: [{ role: 'user', parts: finalParts }],

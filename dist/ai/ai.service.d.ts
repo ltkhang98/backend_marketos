@@ -59,11 +59,14 @@ export declare class AiService implements OnModuleInit {
         productImage?: string;
         productImages?: string[];
         modelImage?: string;
+        logoImage?: string;
         refImage?: string;
-        brandName: string;
+        companyName?: string;
+        productName?: string;
         slogan: string;
         price: string;
         details?: string;
+        industry?: string;
         style: string;
         aspectRatio: string;
         quality: string;
