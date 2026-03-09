@@ -809,7 +809,7 @@ let AiService = class AiService {
         if (mode === 'affiliate_viral') {
             let typeInstruction = "";
             if (videoType === 'entertainment') {
-                typeInstruction = "Tập trung vào tính giải trí, nhịp điệu nhanh, các tình huống gây bất ngờ hoặc hài hước. Ưu tiên yếu tố viral và bắt trend.";
+                typeInstruction = "Tập trung vào tính giải trí, các tình huống gây bất ngờ hoặc hài hước. Ưu tiên yếu tố viral và bắt trend.";
             }
             else if (videoType === 'product') {
                 typeInstruction = "Tập trung vào giải quyết nỗi đau của khách hàng, nêu bật USP (điểm bán hàng độc nhất) và có lời kêu gọi hành động (CTA) cực kỳ thuyết phục.";
