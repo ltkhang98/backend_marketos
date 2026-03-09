@@ -8,10 +8,15 @@ async function bootstrap() {
   app.enableCors({
     origin: [
       'https://marketos-9b845.web.app',
+      'https://marketos-9b845.firebaseapp.com',
       'http://localhost:5173',
+      'http://localhost:5174',
+      'http://localhost:4173',
+      'http://localhost:3000',
     ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
 
   app.setGlobalPrefix('api', {
