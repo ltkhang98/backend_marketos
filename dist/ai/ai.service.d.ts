@@ -19,13 +19,14 @@ export declare class AiService implements OnModuleInit {
     constructor(configService: ConfigService, firebaseAdmin: admin.app.App);
     private initializeModels;
     private listenToApiKeys;
+    private generateAIContentWithRetry;
     private deductCredits;
     analyzeFacebookAd(url: string | undefined, userId: string): Promise<any>;
     getAdsAnalysisHistory(userId: string): Promise<any[]>;
     compareFacebookAds(analysisA: any, analysisB: any, userId: string): Promise<any>;
     fetchContentFromUrl(url: string, userId: string): Promise<any>;
     searchKeywordDiscovery(query: string, retryCount: number | undefined, userId: string): Promise<any[]>;
-    getTrendingKeywords(category: string, userId: string): Promise<any[]>;
+    getTrendingKeywords(category: string, userId: string, type?: 'hot' | 'potential'): Promise<any[]>;
     getKeywordDetail(keyword: string, userId: string): Promise<any>;
     evaluateAndImproveContent(content: string, platform: string, userId: string): Promise<any>;
     private trackUsage;
@@ -50,7 +51,7 @@ export declare class AiService implements OnModuleInit {
         speed: number;
     }, userId: string): Promise<any>;
     downloadProxy(url: string): Promise<axios.AxiosResponse<any, any, {}>>;
-    generateImageMockup(originalPrompt: string, productImage?: string, modelImage?: string, aspectRatio?: string, userId?: string): Promise<{
+    generateImageMockup(originalPrompt: string, productImage?: string, logoImage?: string, modelImage?: string, aspectRatio?: string, userId?: string): Promise<{
         url: string;
     }>;
     private resolveBase64Image;
@@ -110,6 +111,6 @@ export declare class AiService implements OnModuleInit {
     updateSrtContent(fileId: string, srtContent: string, style?: string, fontSize?: number, yPos?: number): Promise<any>;
     onModuleInit(): Promise<void>;
     private checkScheduledAutomations;
-    runAutomationById(id: string, userId: string): Promise<void>;
+    runAutomationById(id: string, userId: string, isTest?: boolean): Promise<void>;
     private processSingleContentTask;
 }

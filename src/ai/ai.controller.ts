@@ -39,8 +39,8 @@ export class AiController {
 
     @UseGuards(FirebaseGuard)
     @Post('generate-mockup')
-    async generateMockup(@Body() body: { prompt: string; productImage?: string; modelImage?: string; aspectRatio?: string }, @Req() req: any) {
-        return this.aiService.generateImageMockup(body.prompt, body.productImage, body.modelImage, body.aspectRatio, req.user.uid);
+    async generateMockup(@Body() body: { prompt: string; productImage?: string; logoImage?: string; modelImage?: string; aspectRatio?: string }, @Req() req: any) {
+        return this.aiService.generateImageMockup(body.prompt, body.productImage, body.logoImage, body.modelImage, body.aspectRatio, req.user.uid);
     }
 
     @UseGuards(FirebaseGuard)
@@ -163,9 +163,9 @@ export class AiController {
 
     @UseGuards(FirebaseGuard)
     @Post('trending-keywords')
-    async trendingKeywords(@Body() body: { category: string }, @Req() req: any) {
+    async trendingKeywords(@Body() body: { category: string, type?: 'hot' | 'potential' }, @Req() req: any) {
         try {
-            return await this.aiService.getTrendingKeywords(body.category, req.user.uid);
+            return await this.aiService.getTrendingKeywords(body.category, req.user.uid, body.type || 'hot');
         } catch (error) {
             throw new InternalServerErrorException(error.message);
         }
@@ -269,9 +269,10 @@ export class AiController {
 
     @UseGuards(FirebaseGuard)
     @Post('run-automation/:id')
-    async runAutomation(@Param('id') id: string, @Req() req: any) {
+    async runAutomation(@Param('id') id: string, @Body() body: { isTest?: boolean }, @Req() req: any) {
         try {
-            return await this.aiService.runAutomationById(id, req.user.uid);
+            const isTest = body.isTest === true;
+            return await this.aiService.runAutomationById(id, req.user.uid, isTest);
         } catch (error) {
             console.error('Lỗi API run-automation:', error);
             throw new InternalServerErrorException(error.message);

@@ -42,7 +42,7 @@ let AiController = class AiController {
         }
     }
     async generateMockup(body, req) {
-        return this.aiService.generateImageMockup(body.prompt, body.productImage, body.modelImage, body.aspectRatio, req.user.uid);
+        return this.aiService.generateImageMockup(body.prompt, body.productImage, body.logoImage, body.modelImage, body.aspectRatio, req.user.uid);
     }
     async generateSmartBanner(body, req) {
         return this.aiService.generateSmartBanner(body, req.user.uid);
@@ -130,7 +130,7 @@ let AiController = class AiController {
     }
     async trendingKeywords(body, req) {
         try {
-            return await this.aiService.getTrendingKeywords(body.category, req.user.uid);
+            return await this.aiService.getTrendingKeywords(body.category, req.user.uid, body.type || 'hot');
         }
         catch (error) {
             throw new common_1.InternalServerErrorException(error.message);
@@ -193,9 +193,10 @@ let AiController = class AiController {
     async updateSubtitles(videoId, srtContent, style, fontSize, yPos, req) {
         return await this.aiService.updateSrtContent(videoId, srtContent, style, fontSize, yPos);
     }
-    async runAutomation(id, req) {
+    async runAutomation(id, body, req) {
         try {
-            return await this.aiService.runAutomationById(id, req.user.uid);
+            const isTest = body.isTest === true;
+            return await this.aiService.runAutomationById(id, req.user.uid, isTest);
         }
         catch (error) {
             console.error('Lỗi API run-automation:', error);
@@ -451,9 +452,10 @@ __decorate([
     (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
     (0, common_1.Post)('run-automation/:id'),
     __param(0, (0, common_1.Param)('id')),
-    __param(1, (0, common_1.Req)()),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:paramtypes", [String, Object, Object]),
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "runAutomation", null);
 exports.AiController = AiController = __decorate([

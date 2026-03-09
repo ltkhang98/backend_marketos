@@ -85,9 +85,19 @@ let AiService = class AiService {
         TTS_PER_100_CHARS: 10,
         TEXT_TO_SPEECH: 100,
         MOCKUP: 300,
+        SMART_BANNER: 300,
+        VIDEO_SCRIPT: 200,
+        FETCH_CONTENT: 100,
         VIDEO_DOWNLOAD: 200,
         TIKTOK_TRENDING: 200,
-        TIKTOK_SCRIPT: 200
+        TIKTOK_SCRIPT: 200,
+        AUTOMATION_SCRIPT: 300,
+        AUTOMATION_ANALYTICS: 500,
+        AUTOMATION_SCRAPING: 500,
+        AUTOMATION_AFFILIATE: 1000,
+        AUTOMATION_ADS_SPY: 500,
+        AUTOMATION_TREND_JACK: 300,
+        AUTOMATION_MARKET_RESEARCH: 500
     };
     constructor(configService, firebaseAdmin) {
         this.configService = configService;
@@ -138,8 +148,14 @@ let AiService = class AiService {
                     const data = doc.data();
                     console.log('--- Credit Costs Updated from Firestore ---');
                     Object.keys(this.CREDIT_COSTS).forEach(key => {
-                        if (data && data[key] !== undefined) {
-                            this.CREDIT_COSTS[key] = Number(data[key]);
+                        if (data) {
+                            const isFree = data[`${key}_isFree`];
+                            if (isFree === true) {
+                                this.CREDIT_COSTS[key] = 0;
+                            }
+                            else if (data[key] !== undefined) {
+                                this.CREDIT_COSTS[key] = Number(data[key]);
+                            }
                         }
                     });
                 }
@@ -152,6 +168,21 @@ let AiService = class AiService {
         }
         catch (error) {
             console.error('Error listening to dynamic settings:', error);
+        }
+    }
+    async generateAIContentWithRetry(prompt, maxRetries = 3) {
+        let retryCount = 0;
+        while (retryCount < maxRetries) {
+            try {
+                return await this.model.generateContent(prompt);
+            }
+            catch (err) {
+                retryCount++;
+                if (retryCount === maxRetries)
+                    throw err;
+                console.warn(`Gemini API retry ${retryCount}/${maxRetries}...`);
+                await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
+            }
         }
     }
     async deductCredits(userId, cost, featureName) {
@@ -365,7 +396,7 @@ let AiService = class AiService {
     async fetchContentFromUrl(url, userId) {
         if (!url)
             throw new Error('URL không hợp lệ');
-        await this.deductCredits(userId, this.CREDIT_COSTS.SOCIAL_CONTENT, 'Phân tích nội dung mạng xã hội');
+        await this.deductCredits(userId, this.CREDIT_COSTS.FETCH_CONTENT, 'Phân tích nội dung mạng xã hội');
         try {
             let html = '';
             if (this.currentScrapingBeeKey) {
@@ -583,15 +614,30 @@ let AiService = class AiService {
             return [];
         }
     }
-    async getTrendingKeywords(category, userId) {
+    async getTrendingKeywords(category, userId, type = 'hot') {
         if (!this.model)
             return [];
         await this.deductCredits(userId, this.CREDIT_COSTS.KEYWORD_DISCOVERY, 'Từ khóa xu hướng');
         try {
-            const prompt = `
+            const prompt = type === 'hot'
+                ? `
             Bạn là một chuyên gia Market Research và SEO Analysis.
-            Nhiệm vụ: Cung cấp danh sách các từ khóa (Keywords) đang được tìm kiếm và sử dụng nhiều nhất (HOT TREND) trong lĩnh vực "${category}" tại thị trường Việt Nam trong 30 ngày qua.
+            Nhiệm vụ: Cung cấp danh sách các từ khóa (Keywords) đang được tìm kiếm và sử dụng nhiều nhất (HOT TREND) tại thị trường Việt Nam trong 30 ngày qua liên quan đến lĩnh vực: "${category}".
             
+            Tiêu chí cho loại HOT TREND:
+            - Ưu tiên các từ khóa có Search Volume cực cao hoặc đang trong trạng thái "Exploding".
+            - Ưu tiên các sự kiện, sản phẩm, tin tức đang tạo sóng truyền thông lớn.
+            `
+                : `
+            Bạn là một chuyên gia Market Research và SEO Analysis.
+            Nhiệm vụ: Cung cấp danh sách các từ khóa (Keywords) có TIỀM NĂNG KINH DOANH CAO (HIGH POTENTIAL) tại thị trường Việt Nam liên quan đến lĩnh vực: "${category}".
+            
+            Tiêu chí cho loại TIỀM NĂNG CAO:
+            - Ưu tiên các từ khóa có mức độ cạnh tranh Thấp hoặc Trung bình nhưng đang có xu hướng tăng (Rising).
+            - Ưu tiên các từ khóa ngách (niche) nhưng có tỷ lệ chuyển đổi hoặc khả năng kiếm tiền cao.
+            - Ưu tiên các nhu cầu khách hàng mới nổi nhưng chưa bị bão hòa.
+            `;
+            const finalPrompt = prompt + `
             Yêu cầu dữ liệu cho mỗi từ khóa:
             - keyword: Từ khóa cụ thể.
             - search_volume: Mức độ tìm kiếm (ví dụ: "Rất cao", "Đang tăng mạnh", hoặc số liệu ước estimates).
@@ -614,7 +660,7 @@ let AiService = class AiService {
 
             CHỈ TRẢ VỀ JSON ARRAY GỒM 12-15 TỪ KHÓA. KHÔNG GIẢI THÍCH.
             `;
-            const result = await this.model.generateContent(prompt);
+            const result = await this.generateAIContentWithRetry(finalPrompt);
             const responseText = result.response.text();
             const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
             if (!jsonMatch)
@@ -661,7 +707,7 @@ let AiService = class AiService {
                 "market_insight": "Phân tích ngắn gọn về hành vi người dùng đối với từ khóa này"
             }
             `;
-            const result = await this.model.generateContent(prompt);
+            const result = await this.generateAIContentWithRetry(prompt);
             const responseText = result.response.text();
             const jsonMatch = responseText.match(/\{[\s\S]*\}/);
             if (!jsonMatch)
@@ -932,7 +978,7 @@ let AiService = class AiService {
             throw new Error('Không thể tải file từ server nguồn');
         }
     }
-    async generateImageMockup(originalPrompt, productImage, modelImage, aspectRatio, userId) {
+    async generateImageMockup(originalPrompt, productImage, logoImage, modelImage, aspectRatio, userId) {
         if (userId) {
             await this.deductCredits(userId, this.CREDIT_COSTS.MOCKUP, 'Tạo Mockup AI');
         }
@@ -954,16 +1000,20 @@ let AiService = class AiService {
 
                 Instructions:
         1. STRICT PRODUCT IDENTITY: The generated image MUST preserve the EXACT appearance, logo, texture, and structural design of the PRODUCT provided in the image.
-                    2. ZERO MODIFICATION: Do NOT add new text, logos, or modify existing designs on the product.Do NOT simplify the product features.
-                    3. VISUAL CLONING: Perform a direct pixel - level transfer of the product's identity into the new scene.
-        4. SPATIAL REFERENCE: Maintain the correct scale and perspective of the product relative to the environment / person.
-                    5. High - End Commercial: Use professional studio lighting(Rembrandt lighting, rim lights), 8k resolution, and photorealistic textures.
-                    6. Composition: The product must be the focal point.Ensure natural interaction(e.g., if it's a sweater, it must be worn exactly as shown).
-        7. Target Aspect Ratio: ${aspectRatio || '1:1'} (${aspectRatio === '9:16' ? 'Portrait' : aspectRatio === '16:9' ? 'Landscape' : 'Square'}).
-        8. Output ONLY the English descriptive prompt focusing on the environment and product placement.Max 90 words.`
+                    2. BRAND INTEGRATION: If a LOGO is provided, integrate it masterfully into the product or scene as a professional branding element.
+                    3. ZERO MODIFICATION: Do NOT add new text, logos, or modify existing designs on the product except for the provided logo.
+                    4. VISUAL CLONING: Perform a direct pixel - level transfer of the product's identity into the new scene.
+        5. SPATIAL REFERENCE: Maintain the correct scale and perspective of the product relative to the environment / person.
+                    6. High - End Commercial: Use professional studio lighting(Rembrandt lighting, rim lights), 8k resolution, and photorealistic textures.
+                    7. Composition: The product must be the focal point.Ensure natural interaction(e.g., if it's a sweater, it must be worn exactly as shown).
+        8. Target Aspect Ratio: ${aspectRatio || '1:1'} (${aspectRatio === '9:16' ? 'Portrait' : aspectRatio === '16:9' ? 'Landscape' : 'Square'}).
+        9. Output ONLY the English descriptive prompt focusing on the environment and product placement.Max 90 words.`
                 ];
                 if (productImage && productImage.includes('base64,')) {
                     promptParts.push({ inlineData: { data: productImage.split('base64,')[1], mimeType: "image/jpeg" } });
+                }
+                if (logoImage && logoImage.includes('base64,')) {
+                    promptParts.push({ inlineData: { data: logoImage.split('base64,')[1], mimeType: "image/jpeg" } });
                 }
                 if (modelImage && modelImage.includes('base64,')) {
                     promptParts.push({ inlineData: { data: modelImage.split('base64,')[1], mimeType: "image/jpeg" } });
@@ -996,6 +1046,9 @@ let AiService = class AiService {
                         ];
                         if (productImage && productImage.includes('base64,')) {
                             finalParts.push({ inlineData: { data: productImage.split('base64,')[1], mimeType: "image/jpeg" } });
+                        }
+                        if (logoImage && logoImage.includes('base64,')) {
+                            finalParts.push({ inlineData: { data: logoImage.split('base64,')[1], mimeType: "image/jpeg" } });
                         }
                         if (modelImage && modelImage.includes('base64,')) {
                             finalParts.push({ inlineData: { data: modelImage.split('base64,')[1], mimeType: "image/jpeg" } });
@@ -1074,7 +1127,7 @@ let AiService = class AiService {
                 throw new common_1.BadRequestException('Không thể xử lý hình ảnh đầu vào. Vui lòng kiểm tra định dạng ảnh.');
             }
             if (userId) {
-                await this.deductCredits(userId, this.CREDIT_COSTS.MOCKUP, 'Thiết kế Banner Smart AI');
+                await this.deductCredits(userId, this.CREDIT_COSTS.SMART_BANNER, 'Thiết kế Banner Studio AI');
             }
             console.log(`--- Smart Banner Generation (${data.style}, ${data.aspectRatio}) ---`);
             const stylePrompts = {
@@ -1496,7 +1549,7 @@ let AiService = class AiService {
         if (!this.model) {
             throw new Error('Gemini API Key is not configured');
         }
-        await this.deductCredits(userId, this.CREDIT_COSTS.SOCIAL_CONTENT, 'Tạo kịch bản video');
+        await this.deductCredits(userId, this.CREDIT_COSTS.VIDEO_SCRIPT, 'Tạo kịch bản video sản phẩm');
         const prompt = `
         Bạn là Đạo diễn hình ảnh và Chuyên gia Creative Marketing. 
         Hãy tạo một kịch bản Storyboard chi tiết cho một video quảng cáo sản phẩm đỉnh cao.
@@ -2675,7 +2728,7 @@ let AiService = class AiService {
             console.error('Lỗi trong hệ thống lập lịch:', error);
         }
     }
-    async runAutomationById(id, userId) {
+    async runAutomationById(id, userId, isTest = false) {
         const db = this.firebaseAdmin.firestore();
         const wfRef = db.collection('automations').doc(id);
         const wfDoc = await wfRef.get();
@@ -2695,7 +2748,7 @@ let AiService = class AiService {
         };
         try {
             await wfRef.update({ runningStatus: 'running' });
-            await addBotLog(`Bot: Khởi tạo quy trình ${wf.name} tự động...`);
+            await addBotLog(`Bot: Khởi tạo quy trình ${wf.name} ${isTest ? 'CHẠY THỬ' : 'tự động'}...`);
             const quantity = parseInt(wf.quantity) || 1;
             const contentSubType = wf.contentSubType || 'sales';
             const topics = contentSubType === 'topics' && wf.topicList ? wf.topicList.split('\n').filter((t) => t.trim() !== '') : [];
@@ -2707,7 +2760,7 @@ let AiService = class AiService {
                     const currentTopic = topics[t];
                     for (let q = 0; q < quantity; q++) {
                         overallIndex++;
-                        await this.processSingleContentTask(wf, wfRef, currentTopic, overallIndex, totalTasks, userId, contentSubType);
+                        await this.processSingleContentTask(wf, wfRef, currentTopic, overallIndex, totalTasks, userId, contentSubType, isTest);
                     }
                 }
             }
@@ -2715,7 +2768,7 @@ let AiService = class AiService {
                 for (let i = 0; i < quantity; i++) {
                     overallIndex++;
                     const currentTopic = wf.description || wf.features;
-                    await this.processSingleContentTask(wf, wfRef, currentTopic, overallIndex, totalTasks, userId, contentSubType);
+                    await this.processSingleContentTask(wf, wfRef, currentTopic, overallIndex, totalTasks, userId, contentSubType, isTest);
                 }
             }
             await addBotLog("Bot: Hoàn tất tạo toàn bộ kịch bản!");
@@ -2738,7 +2791,7 @@ let AiService = class AiService {
             await wfRef.update({ runningStatus: 'idle' });
         }
     }
-    async processSingleContentTask(wf, wfRef, topic, currentIndex, total, userId, subType) {
+    async processSingleContentTask(wf, wfRef, topic, currentIndex, total, userId, subType, isTest = false) {
         const stepTitle = subType === 'topics'
             ? `Bot: Đang tạo bản #${currentIndex}/${total} cho chủ đề: "${topic.substring(0, 30)}..."`
             : `Bot: Đang xử lý kịch bản ${currentIndex}/${total}...`;
@@ -2751,6 +2804,9 @@ let AiService = class AiService {
         try {
             let resultData = null;
             if (wf.type === 'script' || wf.type === 'content_creation') {
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_SCRIPT, 'Quy trình: Tạo kịch bản');
+                }
                 const response = await this.generateContent({
                     brand: wf.name,
                     features: topic,
@@ -2799,8 +2855,11 @@ let AiService = class AiService {
             }
             else if (wf.type === 'analytics') {
                 await connectionLogRef.update({ event: `Bot: Đang thu thập dữ liệu xu hướng cho ngành ${wf.field}...` });
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_ANALYTICS, 'Quy trình: Đối thủ & Xu hướng');
+                }
                 const trendingData = await this.getTikTokTrending('VN', 15, false, wf.field, userId);
-                const trendingKeywords = await this.getTrendingKeywords(wf.field, userId);
+                const trendingKeywords = await this.getTrendingKeywords(wf.field, userId, 'hot');
                 await connectionLogRef.update({ event: `Bot: Đang phân tích chiến thuật của đối thủ trong ngành...` });
                 const analysisPrompt = `
                 Bạn là một chuyên gia Marketing thực chiến. Hãy phân tích dữ liệu sau cho ngành hàng "${wf.field}":
@@ -2852,6 +2911,9 @@ let AiService = class AiService {
             }
             else if (wf.type === 'scraping') {
                 await connectionLogRef.update({ event: `Bot: Đang truy cập dữ liệu thị trường và quét sản phẩm trending ngành ${wf.field}...` });
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_SCRAPING, 'Quy trình: Săn sản phẩm Win');
+                }
                 const trendingData = await this.getTikTokTrending('VN', 20, false, wf.field, userId);
                 const keywords = await this.getTrendingKeywords(wf.field, userId);
                 await connectionLogRef.update({ event: `Bot: Đang bóc tách và nhận diện Winning Products tiềm năng dựa trên AI Logic...` });
@@ -2917,6 +2979,9 @@ let AiService = class AiService {
             }
             else if (wf.type === 'affiliate_pro') {
                 await connectionLogRef.update({ event: `Bot: [BƯỚC 1/3] Đang cào dữ liệu thực tế từ: ${wf.field.substring(0, 30)}...` });
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_AFFILIATE, 'Quy trình: Affiliate Pro');
+                }
                 let scrapedData;
                 try {
                     scrapedData = await this.scrapeProductData(wf.field, userId);
@@ -2981,6 +3046,9 @@ let AiService = class AiService {
             }
             else if (wf.type === 'ads_spy') {
                 await connectionLogRef.update({ event: `Bot: [BƯỚC 1/3] Đang phân tích sâu bài quảng cáo thực tế tại: ${wf.field.substring(0, 30)}...` });
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_ADS_SPY, 'Quy trình: Gián điệp Ads');
+                }
                 let spyReport;
                 try {
                     const analysis = await this.analyzeFacebookAd(wf.field, userId);
@@ -3026,6 +3094,9 @@ let AiService = class AiService {
             }
             else if (wf.type === 'trend_jack') {
                 await connectionLogRef.update({ event: `Bot: [BƯỚC 1/3] Quét Real-time xu hướng TikTok cho từ khóa: ${wf.field}...` });
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_TREND_JACK, 'Quy trình: Bắt Trend TikTok');
+                }
                 const trendingData = await this.getTikTokTrending('VN', 10, true, wf.field, userId);
                 await connectionLogRef.update({ event: `Bot: [BƯỚC 2/3] Đã phát hiện Trend! Đang trích xuất Video Top đầu để nhân bản nội dung...` });
                 await connectionLogRef.update({ event: `Bot: [BƯỚC 3/3] Đang thiết lập kịch bản bắt trend & lên lịch phủ sóng vệ tinh...` });
@@ -3040,6 +3111,9 @@ let AiService = class AiService {
             }
             else if (wf.type === 'market_research') {
                 await connectionLogRef.update({ event: `Bot: Đang thu thập dữ liệu thị trường toàn cầu cho ngách ${wf.field}...` });
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_MARKET_RESEARCH, 'Quy trình: Nghiên cứu ngách');
+                }
                 const trendingData = await this.getTikTokTrending('VN', 30, false, wf.field, userId);
                 const keywords = await this.getTrendingKeywords(wf.field, userId);
                 await connectionLogRef.update({ event: `Bot: AI đang thiết lập bản đồ xu hướng và phân tích tiềm năng ngách...` });

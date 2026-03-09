@@ -13,6 +13,7 @@ export declare class AiController {
     generateMockup(body: {
         prompt: string;
         productImage?: string;
+        logoImage?: string;
         modelImage?: string;
         aspectRatio?: string;
     }, req: any): Promise<{
@@ -58,6 +59,7 @@ export declare class AiController {
     }, req: any): Promise<any>;
     trendingKeywords(body: {
         category: string;
+        type?: 'hot' | 'potential';
     }, req: any): Promise<any[]>;
     evaluateImproveContent(body: {
         content: string;
@@ -71,5 +73,7 @@ export declare class AiController {
     streamBurnedVideo(id: string, req: any, res: Response): Promise<void>;
     downloadBurnedVideo(id: string, res: Response): Promise<void>;
     updateSubtitles(videoId: string, srtContent: string, style: string, fontSize: number, yPos: number, req: any): Promise<any>;
-    runAutomation(id: string, req: any): Promise<void>;
+    runAutomation(id: string, body: {
+        isTest?: boolean;
+    }, req: any): Promise<void>;
 }

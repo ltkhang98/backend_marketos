@@ -52,4 +52,5 @@ export class LandingPagesService {
         await this.db.collection('landing_pages').doc(pageId).delete();
         return { success: true };
     }
+
 }
