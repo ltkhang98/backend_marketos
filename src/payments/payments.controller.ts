@@ -7,8 +7,7 @@ export class PaymentsController {
 
     constructor(private readonly paymentsService: PaymentsService) { }
 
-    @Post('webhook')
-    @Post('sepay-webhook')
+    @Post(['webhook', 'sepay-webhook'])
     @HttpCode(HttpStatus.OK)
     async handleWebhook(@Body() data: any, @Headers() headers: any) {
         this.logger.log('Receiving SePay Webhook - Attempting to process...');
@@ -16,7 +15,8 @@ export class PaymentsController {
         this.logger.log(`Data: ${JSON.stringify(data)}`);
 
         try {
-            const apiKey = headers['authorization']?.replace('Bearer ', '');
+            const authHeader = headers['authorization'] || headers['apikey'] || headers['api-key'];
+            const apiKey = authHeader ? authHeader.replace('Bearer ', '') : undefined;
             return await this.paymentsService.handleSePayWebhook(data, apiKey);
         } catch (err) {
             this.logger.error('Error processing SePay webhook', err);
@@ -24,8 +24,7 @@ export class PaymentsController {
         }
     }
 
-    @Get('webhook')
-    @Get('sepay-webhook')
+    @Get(['webhook', 'sepay-webhook'])
     verifyWebhook() {
         return {
             status: "Active",

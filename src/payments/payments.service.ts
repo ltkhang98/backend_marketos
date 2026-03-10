@@ -12,9 +12,11 @@ export class PaymentsService {
     async handleSePayWebhook(data: any, apiKey: string) {
         // Kiểm tra API Key từ SePay để bảo mật
         const expectedApiKey = process.env.SEPAY_API_KEY;
-        if (!apiKey || apiKey !== expectedApiKey) {
+        if (expectedApiKey && (!apiKey || apiKey !== expectedApiKey)) {
             this.logger.error(`[Webhook] API Key không hợp lệ hoặc thiếu. Nhận được: ${apiKey}`);
             throw new UnauthorizedException('API Key không hợp lệ');
+        } else if (!expectedApiKey) {
+            this.logger.warn(`[Webhook] SEPAY_API_KEY chưa được cấu hình. Tiếp tục xử lý Webhook mà không xác thực...`);
         }
 
         // SePay might send data in different field names depending on version/config
@@ -81,8 +83,16 @@ export class PaymentsService {
                 updatedAt: admin.firestore.FieldValue.serverTimestamp()
             });
             this.logger.log(`Successfully added ${tokensToAdd} credits to user ${transData.uid}`);
+        } else if (transData.type === 'plan') {
+            const newRole = transData.planId === 'free' ? 'user' : transData.planId;
+            await userRef.update({
+                plan: transData.planId,
+                role: newRole,
+                updatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            this.logger.log(`Successfully upgraded user ${transData.uid} to plan ${transData.planId} (Role: ${newRole})`);
         } else {
-            this.logger.warn(`[Webhook] Giao dịch loại "${transData.type}" không còn được hỗ trợ. Chỉ hỗ trợ "credit".`);
+            this.logger.warn(`[Webhook] Giao dịch loại "${transData.type}" không còn được hỗ trợ. Chỉ hỗ trợ "credit" hoặc "plan".`);
         }
 
         return { status: 'success' };
