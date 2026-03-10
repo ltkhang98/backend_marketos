@@ -5,6 +5,12 @@ const app_module_1 = require("./app.module");
 const express_1 = require("express");
 async function bootstrap() {
     const app = await core_1.NestFactory.create(app_module_1.AppModule);
+    app.use((req, res, next) => {
+        if (req.url === '/api/payments/webhook' || req.url === '/api/payments/sepay-webhook') {
+            req.url = req.url.replace('/api/payments/', '/payments/');
+        }
+        next();
+    });
     app.enableCors({
         origin: [
             'https://marketos-9b845.web.app',
@@ -20,7 +26,9 @@ async function bootstrap() {
     });
     app.setGlobalPrefix('api', {
         exclude: [
+            'payments/webhook',
             'payments/sepay-webhook',
+            'webhook',
             'sepay-webhook',
             'payments'
         ],

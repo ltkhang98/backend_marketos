@@ -5,6 +5,14 @@ import { json, urlencoded, text } from 'express';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  // Rewrite URL for misconfigured webhooks
+  app.use((req: any, res: any, next: any) => {
+    if (req.url === '/api/payments/webhook' || req.url === '/api/payments/sepay-webhook') {
+      req.url = req.url.replace('/api/payments/', '/payments/');
+    }
+    next();
+  });
+
   app.enableCors({
     origin: [
       'https://marketos-9b845.web.app',
@@ -21,7 +29,9 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api', {
     exclude: [
+      'payments/webhook',
       'payments/sepay-webhook',
+      'webhook',
       'sepay-webhook',
       'payments'
     ],

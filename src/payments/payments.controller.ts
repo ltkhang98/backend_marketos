@@ -7,6 +7,7 @@ export class PaymentsController {
 
     constructor(private readonly paymentsService: PaymentsService) { }
 
+    @Post('webhook')
     @Post('sepay-webhook')
     @HttpCode(HttpStatus.OK)
     async handleWebhook(@Body() data: any, @Headers() headers: any) {
@@ -23,6 +24,7 @@ export class PaymentsController {
         }
     }
 
+    @Get('webhook')
     @Get('sepay-webhook')
     verifyWebhook() {
         return {

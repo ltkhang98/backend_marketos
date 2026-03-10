@@ -51,6 +51,7 @@ let PaymentsController = PaymentsController_1 = class PaymentsController {
 };
 exports.PaymentsController = PaymentsController;
 __decorate([
+    (0, common_1.Post)('webhook'),
     (0, common_1.Post)('sepay-webhook'),
     (0, common_1.HttpCode)(common_1.HttpStatus.OK),
     __param(0, (0, common_1.Body)()),
@@ -60,6 +61,7 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], PaymentsController.prototype, "handleWebhook", null);
 __decorate([
+    (0, common_1.Get)('webhook'),
     (0, common_1.Get)('sepay-webhook'),
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
