@@ -22,13 +22,16 @@ let PaymentsController = PaymentsController_1 = class PaymentsController {
     constructor(paymentsService) {
         this.paymentsService = paymentsService;
     }
-    async handleWebhook(data, headers) {
+    async handleWebhook(data, headers, query) {
         this.logger.log('Receiving SePay Webhook - Attempting to process...');
         this.logger.log(`Headers: ${JSON.stringify(headers)}`);
         this.logger.log(`Data: ${JSON.stringify(data)}`);
         try {
             const authHeader = headers['authorization'] || headers['apikey'] || headers['api-key'];
-            const apiKey = authHeader ? authHeader.replace('Bearer ', '') : undefined;
+            let apiKey = query.token || query.apikey || undefined;
+            if (authHeader) {
+                apiKey = authHeader.replace(/^Bearer\s+/i, '').replace(/^Apikey\s+/i, '').trim();
+            }
             return await this.paymentsService.handleSePayWebhook(data, apiKey);
         }
         catch (err) {
@@ -56,8 +59,9 @@ __decorate([
     (0, common_1.HttpCode)(common_1.HttpStatus.OK),
     __param(0, (0, common_1.Body)()),
     __param(1, (0, common_1.Headers)()),
+    __param(2, (0, common_1.Query)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:paramtypes", [Object, Object, Object]),
     __metadata("design:returntype", Promise)
 ], PaymentsController.prototype, "handleWebhook", null);
 __decorate([

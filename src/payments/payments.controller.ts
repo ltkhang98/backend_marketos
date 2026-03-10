@@ -1,4 +1,4 @@
-import { Controller, Post, Body, HttpCode, HttpStatus, Logger, Get, Headers } from '@nestjs/common';
+import { Controller, Post, Body, HttpCode, HttpStatus, Logger, Get, Headers, Query } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 
 @Controller('payments')
@@ -9,14 +9,17 @@ export class PaymentsController {
 
     @Post(['webhook', 'sepay-webhook'])
     @HttpCode(HttpStatus.OK)
-    async handleWebhook(@Body() data: any, @Headers() headers: any) {
+    async handleWebhook(@Body() data: any, @Headers() headers: any, @Query() query: any) {
         this.logger.log('Receiving SePay Webhook - Attempting to process...');
         this.logger.log(`Headers: ${JSON.stringify(headers)}`);
         this.logger.log(`Data: ${JSON.stringify(data)}`);
 
         try {
             const authHeader = headers['authorization'] || headers['apikey'] || headers['api-key'];
-            const apiKey = authHeader ? authHeader.replace('Bearer ', '') : undefined;
+            let apiKey = query.token || query.apikey || undefined;
+            if (authHeader) {
+                apiKey = authHeader.replace(/^Bearer\s+/i, '').replace(/^Apikey\s+/i, '').trim();
+            }
             return await this.paymentsService.handleSePayWebhook(data, apiKey);
         } catch (err) {
             this.logger.error('Error processing SePay webhook', err);

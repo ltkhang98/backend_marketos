@@ -3,7 +3,7 @@ export declare class PaymentsController {
     private readonly paymentsService;
     private readonly logger;
     constructor(paymentsService: PaymentsService);
-    handleWebhook(data: any, headers: any): Promise<{
+    handleWebhook(data: any, headers: any, query: any): Promise<{
         status: string;
         message: string;
     } | {
