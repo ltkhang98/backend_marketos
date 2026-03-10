@@ -619,20 +619,25 @@ let AiService = class AiService {
             return [];
         await this.deductCredits(userId, this.CREDIT_COSTS.KEYWORD_DISCOVERY, 'Từ khóa xu hướng');
         try {
+            const currentDate = new Date().toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
             const prompt = type === 'hot'
                 ? `
-            Bạn là một chuyên gia Market Research và SEO Analysis.
-            Nhiệm vụ: Cung cấp danh sách các từ khóa (Keywords) đang được tìm kiếm và sử dụng nhiều nhất (HOT TREND) tại thị trường Việt Nam trong 30 ngày qua liên quan đến lĩnh vực: "${category}".
+            Bạn là một chuyên gia Market Research và SEO Analysis chuyên nghiệp tại Việt Nam.
+            HÔM NAY LÀ NGÀY: ${currentDate}.
+            Nhiệm vụ: Cung cấp danh sách các từ khóa (Keywords) đang là XU HƯỚNG MỚI NHẤT (HOT TREND) tại thị trường Việt Nam trong 30 ngày gần đây tính từ ngày ${currentDate}, liên quan đến lĩnh vực: "${category}".
             
             Tiêu chí cho loại HOT TREND:
+            - Ưu tiên các từ khóa của năm 2025 - 2026 và các sự kiện đang diễn ra.
             - Ưu tiên các từ khóa có Search Volume cực cao hoặc đang trong trạng thái "Exploding".
-            - Ưu tiên các sự kiện, sản phẩm, tin tức đang tạo sóng truyền thông lớn.
+            - Ưu tiên các sự kiện, sản phẩm, tin tức đang tạo sóng truyền thông lớn hiện nay.
             `
                 : `
-            Bạn là một chuyên gia Market Research và SEO Analysis.
-            Nhiệm vụ: Cung cấp danh sách các từ khóa (Keywords) có TIỀM NĂNG KINH DOANH CAO (HIGH POTENTIAL) tại thị trường Việt Nam liên quan đến lĩnh vực: "${category}".
+            Bạn là một chuyên gia Market Research và SEO Analysis chuyên nghiệp tại Việt Nam.
+            HÔM NAY LÀ NGÀY: ${currentDate}.
+            Nhiệm vụ: Cung cấp danh sách các từ khóa (Keywords) có TIỀM NĂNG KINH DOANH CAO (HIGH POTENTIAL) tại thị trường Việt Nam trong giai đoạn năm 2025-2026 liên quan đến lĩnh vực: "${category}".
             
             Tiêu chí cho loại TIỀM NĂNG CAO:
+            - Ưu tiên các xu hướng mới nổi của năm 2026.
             - Ưu tiên các từ khóa có mức độ cạnh tranh Thấp hoặc Trung bình nhưng đang có xu hướng tăng (Rising).
             - Ưu tiên các từ khóa ngách (niche) nhưng có tỷ lệ chuyển đổi hoặc khả năng kiếm tiền cao.
             - Ưu tiên các nhu cầu khách hàng mới nổi nhưng chưa bị bão hòa.
@@ -677,9 +682,11 @@ let AiService = class AiService {
             return null;
         await this.deductCredits(userId, this.CREDIT_COSTS.KEYWORD_DISCOVERY, 'Chi tiết từ khóa');
         try {
+            const currentDate = new Date().toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
             const prompt = `
             BẠN LÀ MỘT CHUYÊN GIA PHÂN TÍCH THỊ TRƯỜNG & CHIẾN LƯỢC TĂNG TRƯỞNG (GROWTH HACKER).
-            Hãy phân tích cực kỳ chi tiết về từ khóa: "${keyword}" tại thị trường Việt Nam.
+            HÔM NAY LÀ NGÀY: ${currentDate}.
+            Hãy phân tích cực kỳ chi tiết về từ khóa: "${keyword}" tại thị trường Việt Nam tính đến thời điểm hiện tại (${currentDate}).
             
             Yêu cầu nội dung phân tích:
             1. Tổng quan sức mạnh từ khóa (Score 1-100).
@@ -2348,13 +2355,18 @@ let AiService = class AiService {
             let insights = null;
             if (this.model && displayVideos.length > 0) {
                 const videoContext = displayVideos.slice(0, 15).map((v) => v.title).filter((t) => t).join('\n');
-                const prompt = `Phân tích danh sách tiêu đề video xu hướng TikTok sau tại khu vực ${region}:
+                const currentDate = new Date().toLocaleDateString('vi-VN', { month: '2-digit', year: 'numeric' });
+                const prompt = `Bạn là một chuyên gia phân tích xu hướng TikTok chuyên sâu.
+                HÔM NAY LÀ NGÀY: ${currentDate}.
+                Phân tích danh sách tiêu đề video/nội dung đang xu hướng TikTok sau tại khu vực ${region} (vào giai đoạn năm 2025-2026):
+                
+                DỮ LIỆU ĐẦU VÀO:
                 ${videoContext}
                 
-                Dựa trên danh sách này, hãy thực hiện:
-                1. Trích xuất 5-7 từ khóa (keywords) viral/thịnh hành nhất.
-                2. Tóm tắt một câu về định hướng nội dung đang chiếm sóng (xu hướng xem hiện tại).
-                3. Đưa ra 1 lời khuyên ngắn gọn cho nhà sáng tạo nội dung muốn "bắt trend".
+                Dựa trên danh sách này và bối cảnh thời gian hiện tại (${currentDate}), hãy thực hiện:
+                1. Trích xuất 5-10 từ khóa (keywords) viral/thịnh hành nhất hiện nay.
+                2. Tóm tắt một câu về định hướng nội dung đang chiếm sóng (xu hướng xem thực tế hiện nay).
+                3. Đưa ra 1 lời khuyên thực chiến ngắn gọn cho nhà sáng tạo nội dung muốn "bắt trend" ngay lúc này.
                 4. Phân tích tệp đối tượng mục tiêu (target_audience) và các chỉ số dự báo (metrics) như Viral Potential (%), Est. Views, Engagement Rate (%).
                 
                 Hãy trả về kết quả dưới định dạng JSON thuần túy (không kèm markdown):
