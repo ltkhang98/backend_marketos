@@ -108,12 +108,16 @@ let AiService = class AiService {
     initializeModels() {
         const geminiKey = this.configService.get('GEMINI_API_KEY')?.trim();
         const fptKey = this.configService.get('FPT_AI_API_KEY')?.trim();
+        const sbKey = this.configService.get('SCRAPINGBEE_API_KEY')?.trim();
+        const rapidKey = this.configService.get('RAPIDAPI_KEY')?.trim();
         if (geminiKey) {
             this.currentGeminiKey = geminiKey;
             this.genAI = new generative_ai_1.GoogleGenerativeAI(geminiKey);
             this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
         }
         this.currentFptKey = fptKey;
+        this.currentScrapingBeeKey = sbKey;
+        this.currentRapidApiKey = rapidKey;
     }
     listenToApiKeys() {
         try {
@@ -1439,57 +1443,64 @@ let AiService = class AiService {
             if (this.currentScrapingBeeKey) {
                 const apiKey = this.currentScrapingBeeKey.trim();
                 try {
-                    console.log(`--- ScrapingBee Stage 1 (Original URL): ${url.substring(0, 100)}... ---`);
+                    console.log(`--- [Render/Cloud] ScrapingBee Stage 1: ${url.substring(0, 100)}... ---`);
                     const sbResponse = await axios_1.default.get('https://app.scrapingbee.com/api/v1', {
                         params: {
                             'api_key': apiKey,
                             'url': url,
-                            'render_js': 'true',
-                            'premium_proxy': 'true',
+                            'render_js': true,
+                            'premium_proxy': true,
+                            'stealth_proxy': true,
                             'country_code': 'vn',
-                            'block_ads': 'true'
+                            'block_ads': true,
+                            'wait': 5000,
+                            'timeout': 55000
                         },
                         timeout: 60000
                     });
                     html = sbResponse.data;
                 }
                 catch (err1) {
-                    console.warn("--- ScrapingBee Stage 1 Failed, trying Stage 2 (Clean URL) ---");
+                    console.warn("--- ScrapingBee Stage 1 Failed, trying Stage 2 (Clean URL + Extra Stealth) ---");
                     try {
                         let cleanUrl = url.split('?')[0];
                         const sbResponse = await axios_1.default.get('https://app.scrapingbee.com/api/v1', {
                             params: {
                                 'api_key': apiKey,
                                 'url': cleanUrl,
-                                'render_js': 'true',
-                                'premium_proxy': 'true',
+                                'render_js': true,
+                                'premium_proxy': true,
+                                'stealth_proxy': true,
                                 'country_code': 'vn',
-                                'block_ads': 'true'
+                                'block_ads': true,
+                                'wait': 8000
                             },
-                            timeout: 60000
+                            timeout: 70000
                         });
                         html = sbResponse.data;
                     }
                     catch (err2) {
-                        console.warn("--- ScrapingBee Stage 2 Failed, using Direct Fallback ---");
+                        console.error("--- ALL ScrapingBee Stages Failed on Render. Checking fallback... ---");
                         const fallbackResponse = await axios_1.default.get(url, {
                             headers: {
                                 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
                                 'Accept-Language': 'vi-VN,vi;q=0.9',
                             },
-                            timeout: 20000
+                            timeout: 25000
                         });
                         html = fallbackResponse.data;
                     }
                 }
             }
             else {
+                console.warn("--- CRITICAL: Missing ScrapingBee Key. Fallback to Direct Axios (Likely to fail on Render) ---");
                 const response = await axios_1.default.get(url, {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
                         'Accept-Language': 'vi-VN,vi;q=0.9',
+                        'Referer': 'https://www.google.com/'
                     },
-                    timeout: 20000
+                    timeout: 25000
                 });
                 html = response.data;
             }
