@@ -278,4 +278,14 @@ export class AiController {
             throw new InternalServerErrorException(error.message);
         }
     }
+    @UseGuards(FirebaseGuard)
+    @Post('render-automation-video/:resultId')
+    async renderAutomationVideo(@Param('resultId') resultId: string, @Body() body: { workflowId?: string }, @Req() req: any) {
+        try {
+            return await this.aiService.renderAutomationVideo(resultId, req.user.uid, body.workflowId);
+        } catch (error) {
+            console.error('Lỗi API render-video:', error);
+            throw new InternalServerErrorException(error.message);
+        }
+    }
 }

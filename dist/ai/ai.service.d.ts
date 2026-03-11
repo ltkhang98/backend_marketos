@@ -113,7 +113,13 @@ export declare class AiService implements OnModuleInit {
     streamBurnedVideo(fileId: string, req: any, res: any): Promise<any>;
     updateSrtContent(fileId: string, srtContent: string, style?: string, fontSize?: number, yPos?: number): Promise<any>;
     onModuleInit(): Promise<void>;
+    private checkProductTriggeredAutomations;
     private checkScheduledAutomations;
-    runAutomationById(id: string, userId: string, isTest?: boolean): Promise<void>;
+    runAutomationById(id: string, userId: string, isTest?: boolean, triggeredProducts?: any[] | null): Promise<void>;
     private processSingleContentTask;
+    private processProductVideoTask;
+    renderAutomationVideo(resultId: string, userId: string, workflowId?: string): Promise<{
+        success: boolean;
+        videoUrl: string;
+    }>;
 }

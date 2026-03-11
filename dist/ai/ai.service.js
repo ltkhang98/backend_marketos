@@ -97,7 +97,8 @@ let AiService = class AiService {
         AUTOMATION_AFFILIATE: 1000,
         AUTOMATION_ADS_SPY: 500,
         AUTOMATION_TREND_JACK: 300,
-        AUTOMATION_MARKET_RESEARCH: 500
+        AUTOMATION_MARKET_RESEARCH: 500,
+        AUTOMATION_PRODUCT_VIDEO: 500
     };
     constructor(configService, firebaseAdmin) {
         this.configService = configService;
@@ -2740,7 +2741,46 @@ let AiService = class AiService {
         console.log('--- [SCHEDULER] Khởi tạo hệ thống lập lịch tự động hóa AI ---');
         setInterval(() => {
             this.checkScheduledAutomations();
+            this.checkProductTriggeredAutomations();
         }, 60 * 1000);
+    }
+    async checkProductTriggeredAutomations() {
+        try {
+            const db = this.firebaseAdmin.firestore();
+            const snapshot = await db.collection('automations')
+                .where('status', '==', 'Active')
+                .where('type', '==', 'product_video')
+                .get();
+            for (const doc of snapshot.docs) {
+                const wf = { id: doc.id, ...doc.data() };
+                const batchSize = parseInt(wf.productBatchSize) || 3;
+                const processedIds = wf.processedProductIds || [];
+                const productsSnap = await db.collection('website_products')
+                    .where('userId', '==', wf.userId)
+                    .limit(100)
+                    .get();
+                const productsList = productsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+                productsList.sort((a, b) => {
+                    const timeA = a.createdAt?.seconds || 0;
+                    const timeB = b.createdAt?.seconds || 0;
+                    return timeB - timeA;
+                });
+                const unprocessedProducts = productsList.filter(p => !processedIds.includes(p.id));
+                if (unprocessedProducts.length >= batchSize) {
+                    console.log(`--- [PRODUCT-TRIGGER] Đủ ${batchSize} sản phẩm! Đang tự động chạy quy trình: ${wf.name} (${wf.id}) ---`);
+                    const batchToProcess = unprocessedProducts.slice(0, batchSize);
+                    await this.runAutomationById(wf.id, wf.userId, false, batchToProcess);
+                    const newProcessedIds = [...processedIds, ...batchToProcess.map(p => p.id)];
+                    await doc.ref.update({
+                        processedProductIds: newProcessedIds,
+                        lastRunDate: new Date().toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
+                    });
+                }
+            }
+        }
+        catch (error) {
+            console.error('Lỗi trong hệ thống kiểm tra trigger sản phẩm:', error);
+        }
     }
     async checkScheduledAutomations() {
         try {
@@ -2775,7 +2815,7 @@ let AiService = class AiService {
             console.error('Lỗi trong hệ thống lập lịch:', error);
         }
     }
-    async runAutomationById(id, userId, isTest = false) {
+    async runAutomationById(id, userId, isTest = false, triggeredProducts = null) {
         const db = this.firebaseAdmin.firestore();
         const wfRef = db.collection('automations').doc(id);
         const wfDoc = await wfRef.get();
@@ -2802,7 +2842,26 @@ let AiService = class AiService {
             const totalTasks = contentSubType === 'topics' ? (topics.length * quantity) : quantity;
             await addBotLog(`Bot: Bắt đầu quy trình tạo tổng cộng ${totalTasks} kịch bản...`);
             let overallIndex = 0;
-            if (contentSubType === 'topics') {
+            if (wf.type === 'product_video') {
+                const productsToProcess = triggeredProducts || [];
+                if (productsToProcess.length === 0) {
+                    const pSnap = await db.collection('website_products')
+                        .where('userId', '==', userId)
+                        .limit(50)
+                        .get();
+                    const pList = pSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+                    pList.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+                    productsToProcess.push(...pList.slice(0, parseInt(wf.productBatchSize) || 3));
+                }
+                if (productsToProcess.length > 0) {
+                    await addBotLog(`Bot: Bắt đầu tạo kịch bản video cho ${productsToProcess.length} sản phẩm mới...`);
+                    await this.processProductVideoTask(wf, wfRef, productsToProcess, userId, isTest);
+                }
+                else {
+                    await addBotLog("Bot: Không tìm thấy sản phẩm mới để tạo video.", "warning");
+                }
+            }
+            else if (contentSubType === 'topics') {
                 for (let t = 0; t < topics.length; t++) {
                     const currentTopic = topics[t];
                     for (let q = 0; q < quantity; q++) {
@@ -3259,6 +3318,201 @@ let AiService = class AiService {
         }
         catch (err) {
             await connectionLogRef.update({ status: 'error', event: `Bot: Lỗi ở bước ${currentIndex}: ${err.message}` });
+        }
+    }
+    async processProductVideoTask(wf, wfRef, products, userId, isTest = false) {
+        const db = this.firebaseAdmin.firestore();
+        for (let i = 0; i < products.length; i++) {
+            const product = products[i];
+            const connectionLogRef = await wfRef.collection('logs').add({
+                event: `Bot: Đang tạo kịch bản Video Review cho sản phẩm: ${product.name}...`,
+                status: "loading",
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            try {
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_PRODUCT_VIDEO, `Quy trình: Video SP (${product.name})`);
+                }
+                const scriptResponse = await this.generateContent({
+                    brand: product.name,
+                    features: `Giá: ${product.price}\nMô tả: ${product.description || ''}`,
+                    platform: 'TikTok',
+                    field: wf.field || 'Sản phẩm Hot',
+                    length: 'short',
+                    price: product.price,
+                    offers: 'Mua ngay tại cửa hàng!',
+                    category: 'Product Review',
+                    mode: 'affiliate_viral',
+                    tone: wf.tone || 'Cuốn hút, chân thực',
+                }, userId);
+                const imageUrl = product.images?.[0] || "https://picsum.photos/800/800";
+                const resultDoc = {
+                    content: scriptResponse.content,
+                    imageUrl: imageUrl,
+                    allImages: product.images || [imageUrl],
+                    productInfo: {
+                        id: product.id || '',
+                        name: product.name || '',
+                        price: product.price || '',
+                        link: product.link || ''
+                    },
+                    type: 'product_video_report',
+                    userId,
+                    workflowId: wfRef.id,
+                    workflowName: wf.name,
+                    workflowType: wf.type,
+                    duration: 15,
+                    musicTheme: 'Upbeat Marketing',
+                    createdAt: admin.firestore.FieldValue.serverTimestamp()
+                };
+                const resultId = (0, uuid_1.v4)();
+                await wfRef.collection('results').doc(resultId).set(resultDoc);
+                await db.collection('automation_all_results').doc(resultId).set(resultDoc);
+                await connectionLogRef.update({ status: 'success', event: `Bot: Hoàn tất kịch bản Video cho "${product.name}"` });
+            }
+            catch (err) {
+                await connectionLogRef.update({ status: 'error', event: `Bot: Lỗi khi xử lý sản phẩm ${product.name}: ${err.message}` });
+            }
+        }
+    }
+    async renderAutomationVideo(resultId, userId, workflowId) {
+        console.log(`[VideoRender] Bắt đầu xử lý cho resultId: ${resultId}, userId: ${userId}, workflowId: ${workflowId}`);
+        const db = this.firebaseAdmin.firestore();
+        let resultRef = db.collection('automation_all_results').doc(resultId);
+        let doc;
+        try {
+            doc = await resultRef.get();
+            if (!doc.exists && workflowId) {
+                console.log(`[VideoRender] Không tìm thấy ở collection chung, thử tìm trong workflow: ${workflowId}`);
+                resultRef = db.collection('automations').doc(workflowId).collection('results').doc(resultId);
+                doc = await resultRef.get();
+            }
+        }
+        catch (err) {
+            console.error('[VideoRender] Lỗi khi truy vấn Firestore:', err);
+            throw new common_1.InternalServerErrorException('Không thể truy cập dữ liệu kết quả.');
+        }
+        if (!doc.exists || !doc.data())
+            throw new common_1.BadRequestException('Không tìm thấy kết quả.');
+        const data = doc.data();
+        if (data.userId !== userId)
+            throw new common_1.BadRequestException('Không có quyền truy cập.');
+        const rawImages = data.allImages || (data.imageUrl ? [data.imageUrl] : []);
+        const images = rawImages.filter((img) => img && typeof img === 'string' && img.startsWith('http'));
+        if (images.length === 0) {
+            console.error('[VideoRender] Không có hình ảnh hợp lệ:', rawImages);
+            throw new common_1.BadRequestException('Báo cáo không chứa hình ảnh hợp lệ để tạo video.');
+        }
+        console.log(`[VideoRender] Tìm thấy ${images.length} hình ảnh để xử lý.`);
+        await resultRef.update({ videoStatus: 'rendering', videoError: null });
+        const tempDir = path.join(os.tmpdir(), `render_${resultId}_${Date.now()}`);
+        if (!fs.existsSync(tempDir))
+            fs.mkdirSync(tempDir, { recursive: true });
+        try {
+            const downloadedPaths = [];
+            for (let i = 0; i < images.length; i++) {
+                const imgUrl = images[i];
+                const imgPath = path.join(tempDir, `img_${i}.jpg`);
+                try {
+                    console.log(`[VideoRender] Đang tải ảnh ${i + 1}/${images.length}: ${imgUrl}`);
+                    const response = await axios_1.default.get(imgUrl, {
+                        responseType: 'arraybuffer',
+                        timeout: 15000,
+                        headers: { 'User-Agent': 'Mozilla/5.0' }
+                    });
+                    fs.writeFileSync(imgPath, Buffer.from(response.data));
+                    downloadedPaths.push(imgPath);
+                }
+                catch (err) {
+                    console.warn(`[VideoRender] Không thể tải ảnh ${imgUrl}:`, err.message);
+                }
+            }
+            if (downloadedPaths.length === 0)
+                throw new Error('Không thể tải bất kỳ hình ảnh nào từ danh sách.');
+            const outputPath = path.join(tempDir, 'output.mp4');
+            console.log(`[VideoRender] Bắt đầu dựng video bằng FFmpeg, total images: ${downloadedPaths.length}`);
+            await new Promise((resolve, reject) => {
+                const command = ffmpeg();
+                downloadedPaths.forEach(p => {
+                    command.input(p).inputOptions(['-loop 1', '-t 3', '-framerate 25']);
+                });
+                const filterComplex = [];
+                for (let i = 0; i < downloadedPaths.length; i++) {
+                    filterComplex.push({
+                        filter: 'scale',
+                        options: 'w=1080:h=1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1',
+                        inputs: `${i}:v`,
+                        outputs: `v${i}`
+                    });
+                }
+                filterComplex.push({
+                    filter: 'concat',
+                    options: { n: downloadedPaths.length, v: 1, a: 0 },
+                    inputs: downloadedPaths.map((_, i) => `v${i}`),
+                    outputs: 'outv'
+                });
+                command
+                    .complexFilter(filterComplex, 'outv')
+                    .outputOptions([
+                    '-c:v libx264',
+                    '-pix_fmt yuv420p',
+                    '-preset fast',
+                    '-r 25',
+                    '-movflags +faststart'
+                ])
+                    .on('start', (cmdLine) => console.log('[VideoRender] FFmpeg command:', cmdLine))
+                    .on('progress', (progress) => console.log(`[VideoRender] Progress: ${progress.percent}% done`))
+                    .on('error', (err, stdout, stderr) => {
+                    console.error('[VideoRender] FFmpeg Error:', err.message);
+                    console.error('[VideoRender] FFmpeg Stderr:', stderr);
+                    reject(err);
+                })
+                    .on('end', () => {
+                    console.log('[VideoRender] FFmpeg hoàn tất dựng video.');
+                    resolve(true);
+                })
+                    .save(outputPath);
+            });
+            console.log('[VideoRender] Đang tải video lên Storage...');
+            const bucket = this.firebaseAdmin.storage().bucket();
+            const destination = `automation_videos/${userId}/${resultId}.mp4`;
+            await bucket.upload(outputPath, {
+                destination,
+                metadata: {
+                    contentType: 'video/mp4',
+                    contentDisposition: `attachment; filename="vibe-production-${resultId}.mp4"`,
+                    cacheControl: 'public, max-age=31536000'
+                }
+            });
+            const file = bucket.file(destination);
+            await file.makePublic();
+            const publicUrl = `https://storage.googleapis.com/${bucket.name}/${destination}`;
+            console.log('[VideoRender] Video đã được tải lên:', publicUrl);
+            await resultRef.update({
+                videoUrl: publicUrl,
+                videoStatus: 'completed',
+                videoRenderedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            return { success: true, videoUrl: publicUrl };
+        }
+        catch (error) {
+            console.error('[VideoRender] Lỗi hệ thống:', error);
+            await resultRef.update({
+                videoStatus: 'error',
+                videoError: error.message
+            });
+            throw new common_1.InternalServerErrorException('Lỗi khi render video: ' + error.message);
+        }
+        finally {
+            try {
+                if (fs.existsSync(tempDir)) {
+                    fs.rmSync(tempDir, { recursive: true, force: true });
+                    console.log('[VideoRender] Đã dọn dẹp thư mục tạm.');
+                }
+            }
+            catch (e) {
+                console.warn('[VideoRender] Không thể dọn dẹp thư mục tạm:', e.message);
+            }
         }
     }
 };

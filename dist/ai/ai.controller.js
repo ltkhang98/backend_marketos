@@ -203,6 +203,15 @@ let AiController = class AiController {
             throw new common_1.InternalServerErrorException(error.message);
         }
     }
+    async renderAutomationVideo(resultId, body, req) {
+        try {
+            return await this.aiService.renderAutomationVideo(resultId, req.user.uid, body.workflowId);
+        }
+        catch (error) {
+            console.error('Lỗi API render-video:', error);
+            throw new common_1.InternalServerErrorException(error.message);
+        }
+    }
 };
 exports.AiController = AiController;
 __decorate([
@@ -458,6 +467,16 @@ __decorate([
     __metadata("design:paramtypes", [String, Object, Object]),
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "runAutomation", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('render-automation-video/:resultId'),
+    __param(0, (0, common_1.Param)('resultId')),
+    __param(1, (0, common_1.Body)()),
+    __param(2, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "renderAutomationVideo", null);
 exports.AiController = AiController = __decorate([
     (0, common_1.Controller)('ai'),
     __metadata("design:paramtypes", [ai_service_1.AiService])

@@ -76,4 +76,10 @@ export declare class AiController {
     runAutomation(id: string, body: {
         isTest?: boolean;
     }, req: any): Promise<void>;
+    renderAutomationVideo(resultId: string, body: {
+        workflowId?: string;
+    }, req: any): Promise<{
+        success: boolean;
+        videoUrl: string;
+    }>;
 }
