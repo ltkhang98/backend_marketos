@@ -108,12 +108,16 @@ let AiService = class AiService {
     initializeModels() {
         const geminiKey = this.configService.get('GEMINI_API_KEY')?.trim();
         const fptKey = this.configService.get('FPT_AI_API_KEY')?.trim();
+        const scrapingbeeKey = this.configService.get('SCRAPINGBEE_API_KEY')?.trim();
+        const rapidApiKey = this.configService.get('RAPIDAPI_KEY')?.trim();
         if (geminiKey) {
             this.currentGeminiKey = geminiKey;
             this.genAI = new generative_ai_1.GoogleGenerativeAI(geminiKey);
             this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
         }
         this.currentFptKey = fptKey;
+        this.currentScrapingBeeKey = scrapingbeeKey;
+        this.currentRapidApiKey = rapidApiKey;
     }
     listenToApiKeys() {
         try {
@@ -998,7 +1002,7 @@ let AiService = class AiService {
             };
             const googleRatio = ratioMap[aspectRatio || '1:1'] || 'ASPECT_RATIO_1_1';
             let enhancedPrompt = originalPrompt;
-            const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+            const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
             try {
                 let promptParts = [
                     `Act as a world - class Visual Artist and Visual Clone Expert. 
@@ -1038,12 +1042,10 @@ let AiService = class AiService {
                 }
                 catch (se) { }
             }
-            const googleModels = [
-                "gemini-2.5-flash-image",
-                "gemini-2.0-flash-exp",
-                "gemini-2.0-flash"
+            const modelsToTry = [
+                "gemini-3-flash-preview"
             ];
-            for (const modelName of googleModels) {
+            for (const modelName of modelsToTry) {
                 for (let attempt = 1; attempt <= 2; attempt++) {
                     try {
                         console.log(`--- Trying Model: ${modelName} (Attempt ${attempt}) ---`);
@@ -1225,7 +1227,7 @@ let AiService = class AiService {
                 - Giá / Thời gian / Ưu đãi: "${data.price}"
                 - Chi tiết phụ trợ: "${data.details}"
             `;
-            const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+            const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
             let promptParts = [
                 {
                     text: `Dịch và Viết lại thành một Lời nhắc (Prompt) tiếng Anh thật chi tiết, có chiều sâu về khả năng render và tạo ảnh AI xuất sắc dựa vào định hướng nghệ thuật sau: ${megaPrompt}.
@@ -1256,9 +1258,7 @@ let AiService = class AiService {
             }
             console.log('--- Smart Banner Enhanced Prompt:', finalPrompt);
             const googleModels = [
-                "gemini-3.1-flash-image-preview",
-                "gemini-2.5-flash-image",
-                "gemini-3-pro-image-preview"
+                "gemini-3-flash-preview"
             ];
             let lastErrorMessage = "";
             for (const modelName of googleModels) {
@@ -1471,27 +1471,44 @@ let AiService = class AiService {
                         html = sbResponse.data;
                     }
                     catch (err2) {
-                        console.warn("--- ScrapingBee Stage 2 Failed, using Direct Fallback ---");
-                        const fallbackResponse = await axios_1.default.get(url, {
-                            headers: {
-                                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
-                                'Accept-Language': 'vi-VN,vi;q=0.9',
-                            },
-                            timeout: 20000
-                        });
-                        html = fallbackResponse.data;
+                        console.error(`--- ScrapingBee Stage 2 Failed on Hosting: ${err2.message} ---`);
+                        console.warn("--- Using Direct Fallback (Warning: Likely to fail on Hosting due to DataCenter IP blocking) ---");
+                        try {
+                            const fallbackResponse = await axios_1.default.get(url, {
+                                headers: {
+                                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+                                    'Accept-Language': 'vi-VN,vi;q=0.9',
+                                },
+                                timeout: 20000
+                            });
+                            html = fallbackResponse.data;
+                            console.log("--- Direct Fallback surprisingly worked! ---");
+                        }
+                        catch (errFallback) {
+                            console.error(`--- Direct Fallback Failed on Hosting (Blocked by Shopee): ${errFallback.message} ---`);
+                        }
                     }
                 }
             }
             else {
-                const response = await axios_1.default.get(url, {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
-                        'Accept-Language': 'vi-VN,vi;q=0.9',
-                    },
-                    timeout: 20000
-                });
-                html = response.data;
+                console.warn("--- No ScrapingBee Key found on Hosting. Using Direct axios. ---");
+                try {
+                    const response = await axios_1.default.get(url, {
+                        headers: {
+                            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+                            'Accept-Language': 'vi-VN,vi;q=0.9',
+                        },
+                        timeout: 20000
+                    });
+                    html = response.data;
+                }
+                catch (errDirect) {
+                    console.error(`--- Direct axios failed on Hosting: ${errDirect.message} ---`);
+                }
+            }
+            if (!html || html.length < 500) {
+                console.error("--- Scraping Failed: HTML content is too empty or blocked. ---");
+                throw new common_1.InternalServerErrorException("Hosting của bạn đang bị Shopee chặn IP. Bạn cần cấu hình ScrapingBee API Key trên Hosting để vượt tường lửa.");
             }
             console.log(`--- HTML Captured (Length: ${html.length}) ---`);
             const title = html.match(/<title>(.*?)<\/title>/)?.[1] || "";
@@ -1568,16 +1585,24 @@ let AiService = class AiService {
                 }
             }
             `;
-            console.log("--- Analyzing with Gemini (Advanced Extraction) ---");
-            const result = await this.model.generateContent(prompt);
-            const responseText = result.response.text();
-            const cleanJson = responseText.replace(/```json|```/g, '').trim();
-            console.log("--- Process Complete ---");
-            return JSON.parse(cleanJson);
+            try {
+                const result = await this.model.generateContent(prompt);
+                const responseText = result.response.text();
+                const cleanJson = responseText.replace(/```json|```/g, '').trim();
+                console.log("--- Process Complete ---");
+                return JSON.parse(cleanJson);
+            }
+            catch (errAi) {
+                console.error("Gemini Extraction Error:", errAi.message);
+                throw new common_1.InternalServerErrorException("AI không thể bóc tách dữ liệu từ link này. Link có thể bị chặn hoặc không đúng định dạng Shopee.");
+            }
         }
         catch (error) {
             console.error("Lỗi hệ thống cào dữ liệu:", error.message);
-            throw new common_1.InternalServerErrorException("hệ thống đang quá tải vui lòng thử lại sau ít phút");
+            if (error instanceof common_1.InternalServerErrorException || error instanceof common_1.BadRequestException) {
+                throw error;
+            }
+            throw new common_1.InternalServerErrorException("Hệ thống cào dữ liệu đang gặp sự cố. Vui lòng thử lại sau.");
         }
     }
     async generateVideoScript(data, userId) {
