@@ -108,16 +108,12 @@ let AiService = class AiService {
     initializeModels() {
         const geminiKey = this.configService.get('GEMINI_API_KEY')?.trim();
         const fptKey = this.configService.get('FPT_AI_API_KEY')?.trim();
-        const sbKey = this.configService.get('SCRAPINGBEE_API_KEY')?.trim();
-        const rapidKey = this.configService.get('RAPIDAPI_KEY')?.trim();
         if (geminiKey) {
             this.currentGeminiKey = geminiKey;
             this.genAI = new generative_ai_1.GoogleGenerativeAI(geminiKey);
             this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
         }
         this.currentFptKey = fptKey;
-        this.currentScrapingBeeKey = sbKey;
-        this.currentRapidApiKey = rapidKey;
     }
     listenToApiKeys() {
         try {

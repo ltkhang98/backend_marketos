@@ -63,8 +63,6 @@ export class AiService implements OnModuleInit {
         // Fallback to .env initially
         const geminiKey = this.configService.get<string>('GEMINI_API_KEY')?.trim();
         const fptKey = this.configService.get<string>('FPT_AI_API_KEY')?.trim();
-        const sbKey = this.configService.get<string>('SCRAPINGBEE_API_KEY')?.trim();
-        const rapidKey = this.configService.get<string>('RAPIDAPI_KEY')?.trim();
 
         if (geminiKey) {
             this.currentGeminiKey = geminiKey;
@@ -72,8 +70,6 @@ export class AiService implements OnModuleInit {
             this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
         }
         this.currentFptKey = fptKey;
-        this.currentScrapingBeeKey = sbKey;
-        this.currentRapidApiKey = rapidKey;
     }
 
     private listenToApiKeys() {
