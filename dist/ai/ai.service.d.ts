@@ -3,9 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import * as admin from 'firebase-admin';
 import * as fs from 'fs';
+import { FacebookService } from '../facebook/facebook.service';
 export declare class AiService implements OnModuleInit {
     private configService;
     private firebaseAdmin;
+    private facebookService;
     private genAI;
     private model;
     private tikwmBaseUrl;
@@ -16,7 +18,7 @@ export declare class AiService implements OnModuleInit {
     private currentScrapingBeeKey;
     private currentRapidApiKey;
     private readonly CREDIT_COSTS;
-    constructor(configService: ConfigService, firebaseAdmin: admin.app.App);
+    constructor(configService: ConfigService, firebaseAdmin: admin.app.App, facebookService: FacebookService);
     private initializeModels;
     private listenToApiKeys;
     private generateAIContentWithRetry;

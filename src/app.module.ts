@@ -13,6 +13,7 @@ import { LandingPagesModule } from './landing-pages/landing-pages.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { MailModule } from './mail/mail.module';
 import { StoreOrdersModule } from './store-orders/store-orders.module';
+import { FacebookModule } from './facebook/facebook.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { StoreOrdersModule } from './store-orders/store-orders.module';
     NotificationsModule,
     MailModule,
     StoreOrdersModule,
+    FacebookModule,
   ],
   controllers: [AppController],
   providers: [AppService],

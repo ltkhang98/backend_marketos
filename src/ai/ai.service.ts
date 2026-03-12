@@ -1,6 +1,6 @@
 import { Injectable, Inject, InternalServerErrorException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { GoogleGenerativeAI, DynamicRetrievalMode } from '@google/generative-ai';
 import axios from 'axios';
 import * as admin from 'firebase-admin';
 import * as fs from 'fs';
@@ -9,6 +9,7 @@ import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 const ffmpeg = require('fluent-ffmpeg');
 import { GoogleAIFileManager } from '@google/generative-ai/server';
+import { FacebookService } from '../facebook/facebook.service';
 
 @Injectable()
 export class AiService implements OnModuleInit {
@@ -49,12 +50,14 @@ export class AiService implements OnModuleInit {
         AUTOMATION_ADS_SPY: 500,    // Gián điệp Ads đối thủ
         AUTOMATION_TREND_JACK: 300, // Bắt Trend TikTok tự động
         AUTOMATION_MARKET_RESEARCH: 500, // Nghiên cứu ngách thị trường
-        AUTOMATION_PRODUCT_VIDEO: 500 // Tự động hóa video sản phẩm
+        AUTOMATION_PRODUCT_VIDEO: 500, // Tự động hóa video sản phẩm
+        AUTOMATION_FANPAGE_POSTING: 500 // Tự động đăng bài Fanpage
     };
 
     constructor(
         private configService: ConfigService,
-        @Inject('FIREBASE_ADMIN') private firebaseAdmin: admin.app.App
+        @Inject('FIREBASE_ADMIN') private firebaseAdmin: admin.app.App,
+        private facebookService: FacebookService
     ) {
         this.initializeModels();
         this.listenToApiKeys();
@@ -68,6 +71,7 @@ export class AiService implements OnModuleInit {
         if (geminiKey) {
             this.currentGeminiKey = geminiKey;
             this.genAI = new GoogleGenerativeAI(geminiKey);
+            // Sử dụng gemini-3-flash-preview theo yêu cầu của hệ thống
             this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
         }
         this.currentFptKey = fptKey;
@@ -944,6 +948,62 @@ export class AiService implements OnModuleInit {
             
             Chỉ trả về nội dung bài viết. PHẢI CÓ EMOJI VÀ KHÔNG CÓ DẤU SAO (*).
             `;
+        } else if (mode === 'fanpage_post') {
+            let styleInstruction = "";
+            const categoryLower = (category || "").toLowerCase();
+
+            if (categoryLower.includes("tin tức")) {
+                styleInstruction = `
+                - ĐÓNG VAI: Phóng viên/Biên tập viên tin tức năng động.
+                - NHIỆM VỤ: Cập nhật tin tức mới nhất, sốt dẻo về chủ đề: "${features}".
+                - PHONG CÁCH: Khách quan, lôi cuốn, đưa tin nhanh, tập trung vào các con số hoặc sự kiện quan trọng.
+                - CẤU TRÚC: Headline tin nóng -> Tóm tắt sự việc và đưa ra các số liệu thống kê -> Nhận định/Dự báo ngắn.
+                `;
+            } else if (categoryLower.includes("bán hàng")) {
+                styleInstruction = `
+                - ĐÓNG VAI: Chuyên gia bán hàng (Copywriter).
+                - NHIỆM VỤ: Viết bài quảng bá sản phẩm/dịch vụ: "${features}".
+                - PHONG CÁCH: Thuyết phục, đánh vào nỗi đau/mong muốn khách hàng, nêu bật lợi ích.
+                - CẤU TRÚC: Hook thu hút -> Vấn đề khách hàng -> Giải pháp (Sản phẩm) -> Đặc điểm nổi bật & Ưu đãi -> Kêu gọi hành động (CTA).
+                `;
+            } else if (categoryLower.includes("chia sẻ")) {
+                styleInstruction = `
+                - ĐÓNG VAI: Chuyên gia/Người chia sẻ giá trị.
+                - NHIỆM VỤ: Viết bài chia sẻ kiến thức, mẹo, lời khuyên về: "${features}".
+                - PHONG CÁCH: Thân thiện, tận tâm, cung cấp giá trị thực tế.
+                - CẤU TRÚC: Đặt vấn đề -> 3-5 Ý chia sẻ/Mẹo hữu ích -> Tổng kết lời khuyên.
+                `;
+            } else if (categoryLower.includes("kể chuyện")) {
+                styleInstruction = `
+                - ĐÓNG VAI: Người kể chuyện (Storyteller).
+                - NHIỆM VỤ: Kể một câu chuyện truyền cảm hứng, tâm sự hoặc trải nghiệm liên quan đến: "${features}".
+                - PHONG CÁCH: Cảm xúc, gần gũi, chân thực, dễ chạm tới trái tim.
+                - CẤU TRÚC: Mở đầu bằng một tình huống lôi cuốn -> Diễn biến câu chuyện -> Bài học hoặc Thông điệp kết nối.
+                `;
+            } else {
+                styleInstruction = `Tạo một bài viết thu hút, bùng nổ về chủ đề: "${features}".`;
+            }
+
+            prompt = `
+            Hãy đóng vai một chuyên gia nội dung Social Media chuyên nghiệp. 
+            Nhiệm vụ: Viết bài đăng Facebook cho chiến dịch: "${brand}".
+            
+            HƯỚNG DẪN PHONG CÁCH BẮT BUỘC:
+            ${styleInstruction}
+
+            Yêu cầu chung:
+            - Nền tảng: ${platform.toUpperCase()}
+            - Độ dài: ${length === 'long' ? 'Chuyên sâu, chi tiết' : 'Ngắn gọn, súc tích, trực diện'}
+            - Tone giọng: ${tone || 'Thân thiện'}
+            - Đối tượng: Cộng đồng quan tâm đến ${field}
+            
+            YÊU CẦU ĐỊNH DẠNG (BẮT BUỘC):
+            1. SỬ DỤNG EMOJI SINH ĐỘNG: Bắt buộc dùng Emoji Unicode phù hợp ở ĐẦU mỗi đoạn hoặc mục.
+            2. TUYÊT ĐỐI KHÔNG DÙNG DẤU SAO (*): Không dùng Markdown để in đậm/nghiêng.
+            3. KHÔNG DÙNG DẤU NGOẶC KÉP (") CHO TIÊU ĐỀ.
+            
+            Chỉ trả về nội dung bài viết. PHẢI CÓ EMOJI VÀ KHÔNG CÓ DẤU SAO (*).
+            `;
         } else {
             prompt = `
             Hãy đóng vai một chuyên gia Social Media Marketing hàng đầu toàn cầu. Hãy tạo một nội dung bài đăng cực kỳ bùng nổ và thu hút cho nền tảng ${platform.toUpperCase()}.
@@ -983,8 +1043,35 @@ export class AiService implements OnModuleInit {
             `;
         }
 
-        const result = await this.model.generateContent(prompt);
-        const response = await result.response;
+        const isNews = (category?.toLowerCase().includes('tin tức') || mode === 'news');
+        let aiResult;
+
+        if (isNews) {
+            // Sử dụng model có hỗ trợ Search Grounding để lấy dữ liệu thực tế (Giá vàng, Thị trường...)
+            const searchEnabledModel = this.genAI.getGenerativeModel({
+                model: "gemini-3-flash-preview",
+                tools: [
+                    {
+                        // @ts-ignore - Đối với các model mới, dùng googleSearch thay vì googleSearchRetrieval
+                        googleSearch: {},
+                    },
+                ],
+            });
+
+            const today = new Date().toLocaleDateString('vi-VN');
+            const newsPrompt = `HÔM NAY LÀ NGÀY: ${today}.
+            YÊU CẦU QUAN TRỌNG: Sử dụng công cụ Google Search để cập nhật thông tin MỚI NHẤT VÀ CHÍNH XÁC NHẤT trong ngày hôm nay về: ${features}. 
+            Tuyệt đối không sử dụng dữ liệu cũ từ năm 2024 hay quá khứ.
+            
+            Sau đó thực hiện viết bài theo yêu cầu sau:
+            ${prompt}`;
+
+            aiResult = await searchEnabledModel.generateContent(newsPrompt);
+        } else {
+            aiResult = await this.model.generateContent(prompt);
+        }
+
+        const response = await aiResult.response;
         return { content: response.text() };
     }
 
@@ -3138,6 +3225,11 @@ export class AiService implements OnModuleInit {
                 timeZone: 'Asia/Ho_Chi_Minh'
             });
 
+            // Heartbeat để biết scheduler vẫn chạy
+            if (now.getSeconds() === 0) {
+                console.log(`[SCHEDULER HEARTBEAT] ${currentTime} - Scanning active automations...`);
+            }
+
             const snapshot = await db.collection('automations')
                 .where('status', '==', 'Active')
                 .get();
@@ -3233,7 +3325,8 @@ export class AiService implements OnModuleInit {
             } else {
                 for (let i = 0; i < quantity; i++) {
                     overallIndex++;
-                    const currentTopic = wf.description || wf.features;
+                    // Nếu là bán hàng, topic sẽ dựa trên Ngành hàng (Field)
+                    const currentTopic = wf.type === 'fanpage_posting' ? `Sản phẩm ${wf.field || 'mới'}` : (wf.description || wf.features);
                     await this.processSingleContentTask(wf, wfRef, currentTopic, overallIndex, totalTasks, userId, contentSubType, isTest);
                 }
             }
@@ -3275,29 +3368,31 @@ export class AiService implements OnModuleInit {
         const db = this.firebaseAdmin.firestore();
 
         try {
-            let resultData = null;
+            let resultData: any = null;
             if (wf.type === 'script' || wf.type === 'content_creation') {
                 if (!isTest) {
                     await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_SCRIPT, 'Quy trình: Tạo kịch bản');
                 }
+                const isSales = subType === 'sales';
+                const mainInput = isSales ? (wf.field || 'Sản phẩm') : topic;
+
                 const response = await this.generateContent({
                     brand: wf.name,
-                    features: topic,
+                    features: mainInput,
                     platform: wf.targetPlatform || wf.platform || 'General',
-                    field: subType === 'topics' ? (wf.category || 'Chung') : (wf.field || 'General'),
-                    length: (wf.targetPlatform === 'Facebook' || wf.targetPlatform === 'Zalo') ? 'long' : 'short',
-                    price: wf.price || 'Liên hệ',
-                    offers: wf.offers || 'Ưu đãi',
-                    category: wf.category || 'Chung',
-                    mode: (wf.type === 'content_creation' && subType === 'topics') ? 'educational' : (wf.type === 'content_creation' ? 'general' : 'affiliate_viral'),
+                    field: wf.field || 'General',
+                    length: wf.contentLength || 'long',
+                    category: wf.actionTarget || 'Chung',
+                    mode: 'fanpage_post', // Dùng chung mode chất lượng cao của Fanpage
                     tone: wf.tone || 'Chuyên nghiệp',
-                    videoType: wf.videoType
+                    price: isSales ? (wf.price || 'Liên hệ') : 'N/A',
+                    offers: isSales ? (wf.offers || 'Ưu đãi') : 'N/A'
                 }, userId);
 
                 let imageUrl = null;
                 if (wf.type === 'content_creation') {
                     // Log nhỏ cho bước tạo ảnh
-                    await wfRef.collection('logs').add({
+                    const imgLog = await wfRef.collection('logs').add({
                         event: `Bot: Đang thiết kế ảnh AI minh họa cho bản #${currentIndex}...`,
                         status: "loading"
                     });
@@ -3310,8 +3405,10 @@ export class AiService implements OnModuleInit {
                             userId
                         );
                         imageUrl = imageResult.url;
+                        await imgLog.update({ status: 'success' });
                     } catch (imgErr) {
                         console.error("Lỗi tạo ảnh AI:", imgErr);
+                        await imgLog.update({ status: 'error', event: `Bot: Lỗi thiết kế ảnh AI cho bản #${currentIndex}` });
                     }
                 }
 
@@ -3332,6 +3429,113 @@ export class AiService implements OnModuleInit {
                         content: response.content,
                         imageUrl: imageUrl,
                         topic: subType === 'topics' ? topic : null,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+                }
+            } else if (wf.type === 'fanpage_posting') {
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_FANPAGE_POSTING, 'Quy trình: Đăng bài Fanpage');
+                }
+
+                const initLog = await wfRef.collection('logs').add({
+                    event: `Bot: Đang khởi tạo nội dung đăng Fanpage... (Cấu hình Page ID: ${wf.selectedPageId || 'TRỐNG'})`,
+                    status: "loading",
+                    createdAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                const isSales = subType === 'sales';
+                const mainInput = isSales ? (wf.field || 'Sản phẩm') : topic;
+
+                // AI soạn nội dung
+                const response = await this.generateContent({
+                    brand: wf.name,
+                    features: mainInput,
+                    platform: 'Facebook',
+                    field: wf.field || 'General',
+                    length: wf.contentLength || 'long',
+                    category: wf.actionTarget || 'Chung',
+                    mode: 'fanpage_post',
+                    tone: wf.tone || 'Thân thiện & Gần gũi',
+                    price: isSales ? 'Liên hệ' : 'N/A',
+                    offers: isSales ? (wf.actionTarget || 'Ưu đãi đặc biệt') : 'N/A'
+                }, userId);
+
+                await initLog.update({ status: 'success' });
+
+                let imageUrl = null;
+                const designLog = await wfRef.collection('logs').add({
+                    event: `Bot: Đang thiết kế ảnh AI minh họa dựa trên mục tiêu: ${wf.actionTarget || 'Chung'}...`,
+                    status: "loading"
+                });
+                try {
+                    // Prompt ảnh dựa trên loại nội dung
+                    const imagePrompt = isSales
+                        ? `A professional high-quality product marketing photography for ${wf.name}. Industry: ${wf.field}. Focus on sales, professional studio lighting, 8k resolution.`
+                        : `A professional high-quality marketing illustration for Facebook. Topic: ${topic}. Tactical Objective: ${wf.actionTarget}. Brand style: ${wf.name}. Modern aesthetic.`;
+
+                    const imageResult = await this.generateImageMockup(
+                        imagePrompt,
+                        undefined,
+                        undefined,
+                        '1:1',
+                        userId
+                    );
+                    imageUrl = imageResult.url;
+                    await designLog.update({ status: 'success' });
+                } catch (imgErr) {
+                    console.error("Lỗi tạo ảnh AI cho Fanpage:", imgErr);
+                    await designLog.update({ status: 'error', event: `Bot: Lỗi thiết kế ảnh cho Fanpage` });
+                }
+
+                resultData = {
+                    content: response.content,
+                    imageUrl: imageUrl,
+                    topic: subType === 'topics' ? topic : null,
+                    type: 'fanpage_post'
+                };
+
+                if (wf.selectedPageId) {
+                    try {
+                        const pageDoc = await db.collection('users').doc(userId).collection('connected_pages').doc(wf.selectedPageId).get();
+                        if (pageDoc.exists) {
+                            const pageData = pageDoc.data()!;
+                            const postPrepLog = await wfRef.collection('logs').add({
+                                event: `Bot${isTest ? ' (Chế độ Thử)' : ''}: Đang chuẩn bị bài viết cho Fanpage: ${pageData.name}...`,
+                                status: "loading",
+                                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                            });
+
+                            const fbResult = await this.facebookService.postToPage(pageData.accessToken, wf.selectedPageId, response.content, imageUrl || undefined);
+                            await postPrepLog.update({ status: 'success' });
+
+                            const finalPostId = fbResult.post_id || fbResult.id;
+                            const postUrl = `https://www.facebook.com/${wf.selectedPageId}/posts/${finalPostId.split('_').pop()}`;
+
+                            await wfRef.collection('logs').add({
+                                event: `Bot${isTest ? ' (Chế độ Thử)' : ''}: Đã đăng bài thành công lên Fanpage! Link: ${postUrl}`,
+                                status: "success",
+                                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                            });
+                        } else {
+                            await wfRef.collection('logs').add({
+                                event: `Bot Lỗi: Không tìm thấy dữ liệu Fanpage (ID: ${wf.selectedPageId}) trong hệ thống của bạn.`,
+                                status: "error",
+                                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                            });
+                        }
+                    } catch (fbErr: any) {
+                        console.error("Lỗi tự động đăng FB:", fbErr.response?.data || fbErr.message);
+                        const errorMsg = fbErr.response?.data?.error?.message || fbErr.message;
+                        await wfRef.collection('logs').add({
+                            event: `Bot Lỗi Facebook: ${errorMsg}`,
+                            status: "error",
+                            createdAt: admin.firestore.FieldValue.serverTimestamp()
+                        });
+                    }
+                } else {
+                    await wfRef.collection('logs').add({
+                        event: `Bot Cảnh báo: Quy trình chưa được chọn Fanpage mục tiêu.`,
+                        status: "warning",
                         createdAt: admin.firestore.FieldValue.serverTimestamp()
                     });
                 }
@@ -3738,7 +3942,7 @@ export class AiService implements OnModuleInit {
 
             // 2. Lưu vào bộ sưu tập tổng
             await db.collection('automation_all_results').add(resultDoc);
-        } catch (err) {
+        } catch (err: any) {
             await connectionLogRef.update({ status: 'error', event: `Bot: Lỗi ở bước ${currentIndex}: ${err.message}` });
         }
     }

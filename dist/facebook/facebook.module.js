@@ -6,19 +6,18 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
     return c > 3 && r && Object.defineProperty(target, key, r), r;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.AiModule = void 0;
+exports.FacebookModule = void 0;
 const common_1 = require("@nestjs/common");
-const ai_controller_1 = require("./ai.controller");
-const ai_service_1 = require("./ai.service");
-const facebook_module_1 = require("../facebook/facebook.module");
-let AiModule = class AiModule {
+const facebook_controller_1 = require("./facebook.controller");
+const facebook_service_1 = require("./facebook.service");
+let FacebookModule = class FacebookModule {
 };
-exports.AiModule = AiModule;
-exports.AiModule = AiModule = __decorate([
+exports.FacebookModule = FacebookModule;
+exports.FacebookModule = FacebookModule = __decorate([
     (0, common_1.Module)({
-        imports: [facebook_module_1.FacebookModule],
-        controllers: [ai_controller_1.AiController],
-        providers: [ai_service_1.AiService],
+        controllers: [facebook_controller_1.FacebookController],
+        providers: [facebook_service_1.FacebookService],
+        exports: [facebook_service_1.FacebookService],
     })
-], AiModule);
-//# sourceMappingURL=ai.module.js.map
+], FacebookModule);
+//# sourceMappingURL=facebook.module.js.map
