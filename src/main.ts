@@ -15,6 +15,8 @@ async function bootstrap() {
 
   app.enableCors({
     origin: [
+      'https://marketos.vn',
+      'https://www.marketos.vn',
       'https://marketos-9b845.web.app',
       'https://marketos-9b845.firebaseapp.com',
       'http://localhost:5173',
