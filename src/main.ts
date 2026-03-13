@@ -5,28 +5,32 @@ import { json, urlencoded, text } from 'express';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  app.enableCors({
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+      const allowedOrigins = [
+        'https://marketos.vn',
+        'https://www.marketos.vn',
+        'https://marketos-9b845.web.app',
+        'https://marketos-9b845.firebaseapp.com',
+        'http://localhost:5173'
+      ];
+      if (!origin || allowedOrigins.some(o => origin.startsWith(o)) || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    credentials: true,
+    allowedHeaders: 'Content-Type, Authorization, Accept, X-Requested-With',
+  });
+
   // Rewrite URL for misconfigured webhooks
   app.use((req: any, res: any, next: any) => {
     if (req.url === '/api/payments/webhook' || req.url === '/api/payments/sepay-webhook') {
       req.url = req.url.replace('/api/payments/', '/payments/');
     }
     next();
-  });
-
-  app.enableCors({
-    origin: [
-      'https://marketos.vn',
-      'https://www.marketos.vn',
-      'https://marketos-9b845.web.app',
-      'https://marketos-9b845.firebaseapp.com',
-      'http://localhost:5173',
-      'http://localhost:5174',
-      'http://localhost:4173',
-      'http://localhost:3000',
-    ],
-    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    credentials: true,
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
   });
 
   app.setGlobalPrefix('api', {
