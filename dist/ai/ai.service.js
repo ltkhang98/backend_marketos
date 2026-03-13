@@ -1926,46 +1926,6 @@ let AiService = class AiService {
                 catch (rapidErr) {
                     console.warn('RapidAPI Social Download failed:', rapidErr.response?.data || rapidErr.message);
                 }
-                try {
-                    console.log(`--- Fetching via Snap Video fallback: ${url} ---`);
-                    const snapResponse = await axios_1.default.get('https://snap-video.p.rapidapi.com/v1/social/autolink', {
-                        params: { url: url },
-                        headers: {
-                            'x-rapidapi-key': this.currentRapidApiKey,
-                            'x-rapidapi-host': 'snap-video.p.rapidapi.com'
-                        },
-                        timeout: 20000
-                    });
-                    const snapData = snapResponse.data;
-                    if (snapData && (snapData.url || snapData.medias)) {
-                        console.log('--- Snap Video success! ---');
-                        let q = [];
-                        if (snapData.medias && Array.isArray(snapData.medias)) {
-                            snapData.medias.forEach((m, idx) => {
-                                q.push({
-                                    label: m.quality || `Tải #${idx + 1}`,
-                                    url: m.url,
-                                    type: m.type || 'video'
-                                });
-                            });
-                        }
-                        else if (snapData.url) {
-                            q.push({ label: 'Tải Video', url: snapData.url, type: 'video' });
-                        }
-                        if (q.length > 0) {
-                            return {
-                                title: snapData.title || `Video ${platform}`,
-                                thumbnail: snapData.thumbnail || snapData.cover || 'https://placehold.co/600x400/000000/FFFFFF/png?text=Market+OS+Video',
-                                source: new URL(url).hostname,
-                                platform: platform,
-                                quality: q
-                            };
-                        }
-                    }
-                }
-                catch (snapErr) {
-                    console.warn('Snap Video fallback failed:', snapErr.message);
-                }
             }
             else {
                 console.warn('No RapidAPI key configured, skipping RapidAPI tier...');

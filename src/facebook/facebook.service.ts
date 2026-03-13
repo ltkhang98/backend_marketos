@@ -1,52 +1,22 @@
-import { Injectable, HttpException, HttpStatus, Logger, OnModuleInit, Inject } from '@nestjs/common';
+import { Injectable, HttpException, HttpStatus, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
-import * as admin from 'firebase-admin';
 
 @Injectable()
-export class FacebookService implements OnModuleInit {
+export class FacebookService {
     private readonly logger = new Logger(FacebookService.name);
-    private fbAppId: string | undefined;
-    private fbAppSecret: string | undefined;
-
-    constructor(
-        private configService: ConfigService,
-        @Inject('FIREBASE_ADMIN') private firebaseAdmin: admin.app.App,
-    ) { }
-
-    onModuleInit() {
-        this.listenToApiKeys();
-    }
-
-    private listenToApiKeys() {
-        try {
-            const db = this.firebaseAdmin.firestore();
-            db.collection('settings').doc('api_keys').onSnapshot(doc => {
-                if (doc.exists) {
-                    const data = doc.data();
-                    this.fbAppId = data?.fb_app_id || this.configService.get('FB_APP_ID');
-                    this.fbAppSecret = data?.fb_app_secret || this.configService.get('FB_APP_SECRET');
-                    if (data?.fb_app_id) {
-                        this.logger.log('--- Facebook API Keys updated from Firestore ---');
-                    }
-                }
-            });
-        } catch (err) {
-            this.logger.error('Error listening to Facebook API keys:', err);
-        }
-    }
+    constructor(private configService: ConfigService) { }
 
     /**
-     * Đổi mã truy cập ngắn hạn sang dài hạn (60 ngày cho User Token)
-     */
+     * Đăng bài viết lên Facebook Page
+     * @param pageAccessToken Token của Page (lấy từ phía client hoặc db)
+     * @param pageId ID của Facebook Page
+     * @param   * message Nội dung bài viết
+   * imageUrl (Tùy chọn) Link ảnh minh họa
+   */
     async exchangeToLongLivedToken(shortLivedToken: string) {
-        const appId = this.fbAppId || this.configService.get('FB_APP_ID');
-        const appSecret = this.fbAppSecret || this.configService.get('FB_APP_SECRET');
-
-        if (!appId || !appSecret) {
-            this.logger.warn('--- Facebook Service: Missing FB_APP_ID or FB_APP_SECRET. Exchange skipped. ---');
-            return { access_token: shortLivedToken };
-        }
+        const appId = this.configService.get('FB_APP_ID');
+        const appSecret = this.configService.get('FB_APP_SECRET');
 
         try {
             const response = await axios.get(`https://graph.facebook.com/v19.0/oauth/access_token`, {
@@ -59,21 +29,25 @@ export class FacebookService implements OnModuleInit {
             });
             return response.data;
         } catch (error) {
-            this.logger.error('FB Exchange Token Error:', error.response?.data || error.message);
-            return { access_token: shortLivedToken }; // Fallback
+            console.error('FB Exchange Token Error:', error.response?.data || error.message);
+            throw new HttpException('Không thể đổi mã truy cập dài hạn', HttpStatus.BAD_REQUEST);
         }
     }
 
     async getUserPages(userAccessToken: string) {
         try {
+            // Bước 1: Đổi sang Long-lived User Token trước
+            // Điều này cực kỳ quan trọng: Nếu dùng Long-lived User Token để lấy Page Token, 
+            // thì Page Token nhận được sẽ là PERMANENT (không bao giờ hết hạn).
             let finalToken = userAccessToken;
-            const longLivedData = await this.exchangeToLongLivedToken(userAccessToken);
-
-            if (longLivedData.access_token && longLivedData.access_token !== userAccessToken) {
-                finalToken = longLivedData.access_token;
-                this.logger.log('--- Facebook Service: Using Long-lived User Token to fetch Pages (Permanent Token Logic) ---');
-            } else {
-                this.logger.warn('--- Facebook Service: Could NOT get Long-lived token, Page Tokens will be SHORT-LIVED! ---');
+            try {
+                const longLivedData = await this.exchangeToLongLivedToken(userAccessToken);
+                if (longLivedData.access_token) {
+                    finalToken = longLivedData.access_token;
+                    console.log('--- Facebook Service: Successfully exchanged to Long-lived User Token ---');
+                }
+            } catch (exchangeErr) {
+                console.warn('--- Facebook Service: Failed to exchange token, proceeding with short-lived token ---');
             }
 
             // Bước 2: Lấy danh sách Page
