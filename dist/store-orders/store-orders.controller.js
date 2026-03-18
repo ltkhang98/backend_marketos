@@ -16,6 +16,7 @@ exports.StoreOrdersController = void 0;
 const common_1 = require("@nestjs/common");
 const mail_service_1 = require("../mail/mail.service");
 const notifications_service_1 = require("../notifications/notifications.service");
+const firebase_guard_1 = require("../auth/firebase.guard");
 let StoreOrdersController = class StoreOrdersController {
     mailService;
     notificationsService;
@@ -37,7 +38,7 @@ let StoreOrdersController = class StoreOrdersController {
         });
         return {
             success,
-            message: success ? 'Email confirmation sent' : 'Failed to send email confirmation',
+            message: success ? 'Email confirmation sent' : 'Không thể gửi email xác nhận. Vui lòng kiểm tra cấu hình SMTP trong file .env (App Password Gmail có thể đã hết hạn hoặc sai).',
         };
     }
 };
@@ -51,6 +52,7 @@ __decorate([
 ], StoreOrdersController.prototype, "confirmOrder", null);
 exports.StoreOrdersController = StoreOrdersController = __decorate([
     (0, common_1.Controller)('store-orders'),
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
     __metadata("design:paramtypes", [mail_service_1.MailService,
         notifications_service_1.NotificationsService])
 ], StoreOrdersController);

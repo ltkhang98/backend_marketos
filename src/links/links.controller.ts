@@ -35,3 +35,4 @@ export class LinksController {
         return res.status(HttpStatus.NOT_FOUND).send('Link not found');
     }
 }
+

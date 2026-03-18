@@ -7,14 +7,23 @@ export class MailService {
     private transporter: nodemailer.Transporter;
 
     constructor(private configService: ConfigService) {
+        const host = this.configService.get<string>('SMTP_HOST');
+        const port = parseInt(this.configService.get<string>('SMTP_PORT') || '587');
+
+        console.log(`[MailService] Khởi tạo SMTP với host: ${host}, port: ${port}`);
+
         this.transporter = nodemailer.createTransport({
-            host: this.configService.get<string>('SMTP_HOST'),
-            port: this.configService.get<number>('SMTP_PORT'),
-            secure: false, // true for 465, false for other ports
+            host,
+            port,
+            secure: port === 465, // true cho 465, false cho 587
             auth: {
                 user: this.configService.get<string>('SMTP_USER'),
                 pass: this.configService.get<string>('SMTP_PASS'),
             },
+            tls: {
+                // Đảm bảo không bị lỗi chứng chỉ trên một số máy chủ
+                rejectUnauthorized: false
+            }
         });
     }
 
@@ -38,16 +47,26 @@ export class MailService {
     `;
 
         try {
+            console.log(`[MailService] Đang gửi email confirmation đến: ${to}...`);
             await this.transporter.sendMail({
                 from,
                 to,
                 subject: `Xác nhận đơn hàng đặt thành công #${orderId}`,
                 html,
             });
-            console.log(`Email đã được gửi thành công đến: ${to}`);
+            console.log(`[MailService] Email đã được gửi thành công đến: ${to}`);
             return true;
         } catch (error) {
-            console.error('Lỗi khi gửi email:', error);
+            console.error('[MailService] Lỗi khi gửi email:', {
+                message: error.message,
+                stack: error.stack,
+                config: {
+                    host: this.configService.get('SMTP_HOST'),
+                    port: this.configService.get('SMTP_PORT'),
+                    user: this.configService.get('SMTP_USER'),
+                    from
+                }
+            });
             return false;
         }
     }

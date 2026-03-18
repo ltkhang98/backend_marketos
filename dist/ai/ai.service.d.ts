@@ -1,4 +1,5 @@
 import { OnModuleInit } from '@nestjs/common';
+import { Queue } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import * as admin from 'firebase-admin';
@@ -8,6 +9,8 @@ export declare class AiService implements OnModuleInit {
     private configService;
     private firebaseAdmin;
     private facebookService;
+    private readonly videoQueue;
+    private readonly logger;
     private genAI;
     private model;
     private tikwmBaseUrl;
@@ -18,9 +21,16 @@ export declare class AiService implements OnModuleInit {
     private currentScrapingBeeKey;
     private currentRapidApiKey;
     private readonly CREDIT_COSTS;
-    constructor(configService: ConfigService, firebaseAdmin: admin.app.App, facebookService: FacebookService);
+    constructor(configService: ConfigService, firebaseAdmin: admin.app.App, facebookService: FacebookService, videoQueue: Queue);
     private initializeModels;
     private listenToApiKeys;
+    getJobStatus(jobId: string): Promise<{
+        id: string | undefined;
+        state: import("bullmq").JobState | "unknown";
+        progress: any;
+        result: any;
+        reason: string;
+    }>;
     private generateAIContentWithRetry;
     private deductCredits;
     analyzeFacebookAd(url: string | undefined, userId: string): Promise<any>;
@@ -95,7 +105,7 @@ export declare class AiService implements OnModuleInit {
     }, userId: string): Promise<any>;
     downloadUniversalVideo(url: string, userId: string): Promise<any>;
     private detectPlatform;
-    downloadTikTokVideo(url: string, userId: string): Promise<any>;
+    downloadTikTokVideo(url: string, userId: string, skipDeduction?: boolean): Promise<any>;
     private callTikWM;
     analyzeTikTokChannel(uniqueId: string, userId: string): Promise<any>;
     generateTikTokAIAnalysis(user: any, stats: any, videos: any[], retryCount?: number): Promise<any>;
@@ -107,13 +117,19 @@ export declare class AiService implements OnModuleInit {
     generateLandingPage(userPrompt: string): Promise<any>;
     private extractAudioWithFFmpeg;
     private burnSubtitlesWithFFmpeg;
-    generateAutoSubtitles(file: any, srcLang: string, targetLang: string, style: string, fontSize?: number, yPos?: number, userId?: string): Promise<any>;
+    generateAutoSubtitles(file: any, srcLang: string, targetLang: string, style: string, fontSize?: number, yPos?: number, userId?: string, subColor?: string, subBgColor?: string): Promise<any>;
+    processAutoSubJob(job: any): Promise<{
+        success: boolean;
+        srtContent: any;
+        videoId: any;
+    }>;
     downloadBurnedVideo(fileId: string): Promise<{
         stream: fs.ReadStream;
         size: number;
     }>;
     streamBurnedVideo(fileId: string, req: any, res: any): Promise<any>;
-    updateSrtContent(fileId: string, srtContent: string, style?: string, fontSize?: number, yPos?: number): Promise<any>;
+    streamDubbedVideo(jobId: string, req: any, res: any): Promise<void>;
+    updateSrtContent(fileId: string, srtContent: string, style?: string, fontSize?: number, yPos?: number, subColor?: string, subBgColor?: string): Promise<any>;
     onModuleInit(): Promise<void>;
     private checkProductTriggeredAutomations;
     private checkScheduledAutomations;
@@ -124,4 +140,25 @@ export declare class AiService implements OnModuleInit {
         success: boolean;
         videoUrl: string;
     }>;
+    generateVideoDubbing(file: any, targetVoice: string, targetLang: string, userId: string, bgVolume?: number, dubVolume?: number, showSubtitles?: boolean, subStyle?: {
+        color?: string;
+        fontSize?: number;
+        bgColor?: string;
+        verticalPos?: number;
+    }): Promise<any>;
+    processDubbingJob(job: any): Promise<{
+        success: boolean;
+        videoId: any;
+        jobDir: string;
+    }>;
+    private parseSrt;
+    private srtTimeToSeconds;
+    private getVideoDuration;
+    private getAudioDuration;
+    private stretchAudio;
+    private removeAudioFromVideo;
+    private muxDubbedVideo;
+    private splitLongSegments;
+    private formatSrt;
+    private secondsToSrtTime;
 }

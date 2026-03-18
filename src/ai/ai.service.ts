@@ -1,4 +1,6 @@
-import { Injectable, Inject, InternalServerErrorException, BadRequestException, OnModuleInit } from '@nestjs/common';
+import { Injectable, Inject, InternalServerErrorException, BadRequestException, OnModuleInit, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI, DynamicRetrievalMode } from '@google/generative-ai';
 import axios from 'axios';
@@ -13,6 +15,7 @@ import { FacebookService } from '../facebook/facebook.service';
 
 @Injectable()
 export class AiService implements OnModuleInit {
+    private readonly logger = new Logger(AiService.name);
     private genAI: GoogleGenerativeAI;
     private model: any;
     private tikwmBaseUrl = 'https://www.tikwm.com/api/';
@@ -51,13 +54,15 @@ export class AiService implements OnModuleInit {
         AUTOMATION_TREND_JACK: 300, // Bắt Trend TikTok tự động
         AUTOMATION_MARKET_RESEARCH: 500, // Nghiên cứu ngách thị trường
         AUTOMATION_PRODUCT_VIDEO: 500, // Tự động hóa video sản phẩm
-        AUTOMATION_FANPAGE_POSTING: 500 // Tự động đăng bài Fanpage
+        AUTOMATION_FANPAGE_POSTING: 500, // Tự động đăng bài Fanpage
+        VIDEO_DUBBING_PER_MIN: 2000      // Lồng tiếng video tự động (mỗi phút)
     };
 
     constructor(
         private configService: ConfigService,
         @Inject('FIREBASE_ADMIN') private firebaseAdmin: admin.app.App,
-        private facebookService: FacebookService
+        private facebookService: FacebookService,
+        @InjectQueue('video-processing') private readonly videoQueue: Queue
     ) {
         this.initializeModels();
         this.listenToApiKeys();
@@ -143,6 +148,27 @@ export class AiService implements OnModuleInit {
         } catch (error) {
             console.error('Error listening to dynamic settings:', error);
         }
+    }
+
+    async getJobStatus(jobId: string) {
+        const job = await this.videoQueue.getJob(jobId);
+        if (!job) {
+            throw new BadRequestException('Không tìm thấy Job ID');
+        }
+
+        const state = await job.getState();
+        // job.progress có thể là number hoặc hàm tùy phiên bản, nên dùng cách an toàn
+        const progress = typeof job.progress === 'function' ? await (job as any).progress() : job.progress;
+        const result = job.returnvalue;
+        const reason = job.failedReason;
+
+        return {
+            id: job.id,
+            state,
+            progress,
+            result,
+            reason
+        };
     }
 
     private async generateAIContentWithRetry(prompt: string, maxRetries = 3): Promise<any> {
@@ -1126,15 +1152,39 @@ export class AiService implements OnModuleInit {
 
     async downloadProxy(url: string) {
         try {
+            const headers: any = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            };
+
+            // Thiết lập Referer phù hợp để tránh 403 Forbidden
+            if (url.includes('douyin.com') || url.includes('pstatp.com') || url.includes('zjcdn.com')) {
+                headers['Referer'] = 'https://www.douyin.com/';
+                headers['Origin'] = 'https://www.douyin.com';
+            } else if (url.includes('tiktok.com')) {
+                headers['Referer'] = 'https://www.tiktok.com/';
+                headers['Origin'] = 'https://www.tiktok.com';
+            } else if (url.includes('facebook.com') || url.includes('fbcdn.net')) {
+                headers['Referer'] = 'https://www.facebook.com/';
+                headers['Origin'] = 'https://www.facebook.com';
+            } else {
+                // Mặc định thử dùng Referer từ chính domain video
+                try {
+                    const domain = new URL(url).origin;
+                    headers['Referer'] = domain + '/';
+                } catch (e) { }
+            }
+
             const response = await axios({
                 url,
                 method: 'GET',
                 responseType: 'stream',
+                headers,
+                timeout: 30000,
             });
             return response;
         } catch (error) {
             console.error('Lỗi khi proxy download:', error.message);
-            throw new Error('Không thể tải file từ server nguồn');
+            throw new Error('Không thể kết nối đến server nguồn để tải file. Link có thể đã hết hạn.');
         }
     }
 
@@ -1906,6 +1956,21 @@ export class AiService implements OnModuleInit {
     }
 
     async downloadUniversalVideo(url: string, userId: string): Promise<any> {
+        // Tách URL từ chuỗi nếu người dùng paste cả text (phổ biến với Douyin/TikTok)
+        const urlRegex = /(https?:\/\/[^\s，！。？]+)/;
+        const urlMatch = url.match(urlRegex);
+        if (urlMatch) {
+            url = urlMatch[0];
+        }
+
+        // Làm sạch URL: xóa query params (trừ Facebook cần v=) và dấu slash cuối cùng
+        if (!url.includes('facebook.com') && !url.includes('fb.watch')) {
+            url = url.trim().split('?')[0];
+            if (url.endsWith('/')) {
+                url = url.slice(0, -1);
+            }
+        }
+
         await this.deductCredits(userId, this.CREDIT_COSTS.VIDEO_DOWNLOAD, 'Tải video');
 
         const platform = this.detectPlatform(url);
@@ -1913,7 +1978,8 @@ export class AiService implements OnModuleInit {
         // Nếu là TikTok hoặc Douyin, sử dụng TikWM cho ổn định và map lại format
         if (platform === 'TikTok' || platform === 'Douyin') {
             try {
-                const tikData = await this.downloadTikTokVideo(url, userId); // Pass userId
+                // Thêm tham số true để bỏ qua trừ credit lần 2 bên trong hàm này
+                const tikData = await this.downloadTikTokVideo(url, userId, true);
                 return {
                     title: tikData.title || `Video ${platform}`,
                     thumbnail: tikData.cover || tikData.origin_cover,
@@ -1933,7 +1999,7 @@ export class AiService implements OnModuleInit {
                     ]
                 };
             } catch (err) {
-                console.warn(`TikWM failed for ${platform}, falling back to Cobalt:`, err.message);
+                console.warn(`TikWM failed for ${platform}, falling back to RapidAPI/Cobalt:`, err.message);
             }
         }
 
@@ -2108,14 +2174,6 @@ export class AiService implements OnModuleInit {
                         }
 
                         if (quality.length > 0) {
-                            // Lọc bỏ lựa chọn "HD No Watermark" cho Douyin theo yêu cầu người dùng
-                            if (platform === 'Douyin') {
-                                quality = quality.filter(q =>
-                                    !q.label.toLowerCase().includes('hd no watermark') &&
-                                    !q.label.toLowerCase().includes('hd no water mark')
-                                );
-                            }
-
                             console.log(`--- RapidAPI success! Found ${quality.length} download links ---`);
                             return {
                                 title: data.title || `Video ${platform}`,
@@ -2274,21 +2332,47 @@ export class AiService implements OnModuleInit {
         }
     }
 
-    async downloadTikTokVideo(url: string, userId: string): Promise<any> {
-        await this.deductCredits(userId, this.CREDIT_COSTS.VIDEO_DOWNLOAD, 'Tải video TikTok');
+    async downloadTikTokVideo(url: string, userId: string, skipDeduction = false): Promise<any> {
+        // Tách URL từ chuỗi nếu người dùng paste cả text
+        const urlRegex = /(https?:\/\/[^\s，！。？]+)/;
+        const urlMatch = url.match(urlRegex);
+        if (urlMatch) {
+            url = urlMatch[0];
+        }
+
+        if (!skipDeduction) {
+            await this.deductCredits(userId, this.CREDIT_COSTS.VIDEO_DOWNLOAD, 'Tải video TikTok');
+        }
 
         try {
+            // Làm sạch URL: xóa query params và dấu slash cuối cùng
+            let cleanUrl = url.trim().split('?')[0];
+            if (cleanUrl.endsWith('/')) {
+                cleanUrl = cleanUrl.slice(0, -1);
+            }
+
             // Xử lý link Douyin linh hoạt hơn
-            let cleanUrl = url.trim();
             if (cleanUrl.includes('douyin.com')) {
-                // Nếu là link dài www.douyin.com, TikWM có thể bị lỗi parsing
+                // Nếu là link rút gọn v.douyin.com, cần resolve sang link thật để lấy ID
+                if (cleanUrl.includes('v.douyin.com')) {
+                    try {
+                        const resolveRes = await axios.get(cleanUrl, {
+                            maxRedirects: 5,
+                            timeout: 10000,
+                            validateStatus: (status) => status >= 200 && status < 400,
+                        });
+                        cleanUrl = resolveRes.request.res.responseUrl || resolveRes.config.url || cleanUrl;
+                        console.log(`--- Resolved Douyin Short URL to: ${cleanUrl} ---`);
+                    } catch (e) {
+                        console.warn('Failed to resolve short Douyin URL, proceeding with original:', e.message);
+                    }
+                }
+
                 const match = cleanUrl.match(/\/video\/(\d+)/);
                 if (match && match[1]) {
-                    // Format iesdouyin thường ổn định hơn cho các API scraping
-                    cleanUrl = `https://www.iesdouyin.com/share/video/${match[1]}/`;
+                    // Format www.douyin.com/video/ID được TikWM hỗ trợ tốt hơn iesdouyin
+                    cleanUrl = `https://www.douyin.com/video/${match[1]}`;
                 }
-            } else {
-                cleanUrl = cleanUrl.split('?')[0];
             }
 
             console.log(`--- Fetching via TikWM: ${cleanUrl} ---`);
@@ -2888,27 +2972,42 @@ export class AiService implements OnModuleInit {
         });
     }
 
-    private async burnSubtitlesWithFFmpeg(videoPath: string, srtPath: string, outputPath: string, styleMode: string, fontSize?: number, yPos?: number): Promise<void> {
+    private async burnSubtitlesWithFFmpeg(videoPath: string, srtPath: string, outputPath: string, styleMode: string, fontSize?: number, yPos?: number, subColor?: string, subBgColor?: string): Promise<void> {
         return new Promise((resolve, reject) => {
             let styleArgs = '';
             const size = fontSize || (styleMode === 'tiktok' ? 26 : (styleMode === 'classic' ? 20 : 22));
 
             // Handle style formatting
-            const marginV = Math.round((yPos || 80) * 0.1); // Simple fallback/scaling
-            const alignment = 8; // Top Center
-            const finalMarginV = Math.round((yPos || 80) * 10.8); // Scale 0-100 to approx 0-1080px (common height)
+            // Sử dụng Alignment=2 (Bottom Center) để chuẩn hóa vị trí từ dưới lên
+            // yPos từ client: 0 (top) -> 100 (bottom). 
+            // MarginV (từ dưới lên): (100 - yPos) * 10.8 (theo chuẩn 1080p)
+            const resolvedYPos = yPos !== undefined ? yPos : 80;
+            const finalMarginV = Math.round((100 - resolvedYPos) * 10.8);
 
-            if (styleMode === 'tiktok') {
-                styleArgs = `force_style='FontSize=${size},PrimaryColour=&H0000FFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=0,Bold=1,Alignment=8,MarginV=${finalMarginV}'`;
-            } else if (styleMode === 'classic') {
-                styleArgs = `force_style='FontSize=${size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=1,Shadow=1,BackColour=&H80000000,Alignment=8,MarginV=${finalMarginV}'`;
-            } else if (styleMode === 'dynamic') {
-                styleArgs = `force_style='FontSize=${size},PrimaryColour=&H0000FF00,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=2,Bold=1,Italic=1,Alignment=8,MarginV=${finalMarginV}'`;
-            } else {
-                styleArgs = `force_style='FontSize=${size},PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=1,Shadow=0,Alignment=8,MarginV=${finalMarginV}'`;
+            // Helper để chuyển Hex sang ASS format (BBGGRR)
+            const hexToAss = (hex: string) => {
+                if (hex && hex.startsWith('#') && hex.length === 7) {
+                    const r = hex.substring(1, 3);
+                    const g = hex.substring(3, 5);
+                    const b = hex.substring(5, 7);
+                    return `${b}${g}${r}`;
+                }
+                return 'FFFFFF';
+            };
+
+            const assPrimaryColor = subColor ? hexToAss(subColor) : (styleMode === 'tiktok' ? '00FFFF' : 'FFFFFF');
+            const assBgColor = subBgColor ? hexToAss(subBgColor) : '000000';
+
+            // Thêm PlayResY=1080 để cố định hệ tọa độ cho font size và margin, tránh bị to/nhỏ tùy độ phân giải video
+            const style = `force_style='PlayResY=1080,FontSize=${size * 2},PrimaryColour=&H00${assPrimaryColor},BackColour=&H80${assBgColor},BorderStyle=3,Outline=1,Shadow=1,Fontname=Arial,Bold=1,Alignment=2,MarginV=${finalMarginV}'`;
+            styleArgs = style;
+
+            // Xử lý path cho filter subtitles của FFmpeg
+            // Trên Windows cần escape dấu hai chấm của ổ đĩa (C:\ -> C\\\:), trên Linux thì không cần.
+            let safeSrtPath = srtPath.replace(/\\/g, '/');
+            if (process.platform === 'win32') {
+                safeSrtPath = safeSrtPath.replace(/:/g, '\\\\:');
             }
-
-            const safeSrtPath = srtPath.replace(/\\/g, '/').replace(/:/g, '\\\\:');
 
             ffmpeg(videoPath)
                 .outputOptions([
@@ -2923,63 +3022,74 @@ export class AiService implements OnModuleInit {
         });
     }
 
-    async generateAutoSubtitles(file: any, srcLang: string, targetLang: string, style: string, fontSize?: number, yPos?: number, userId?: string): Promise<any> {
+    async generateAutoSubtitles(file: any, srcLang: string, targetLang: string, style: string, fontSize?: number, yPos?: number, userId?: string, subColor?: string, subBgColor?: string): Promise<any> {
         if (!this.currentGeminiKey) {
             throw new Error('Chưa cấu hình API Key Gemini');
         }
 
-        // Ước tính phí: Charging 1000 credits (minimum) or based on video duration if we could easily get it.
-        // Let's just deduct a base fee for now, or we can use ffprobe later if needed.
-        if (userId) {
-            await this.deductCredits(userId, this.CREDIT_COSTS.AUTO_SUB_PER_MIN, 'Phụ đề tự động');
-        }
+        const job = await this.videoQueue.add('auto-sub', {
+            type: 'auto-sub',
+            data: {
+                fileBuffer: file.buffer.toJSON(), // Chuyển buffer sang JSON để BullMQ serialize được
+                srcLang,
+                targetLang,
+                style,
+                fontSize,
+                yPos,
+                userId,
+                subColor,
+                subBgColor,
+                fileName: file.originalname || 'video.mp4'
+            }
+        });
 
-        const isAllowed = await this.checkLimit('gemini');
-        if (!isAllowed) {
-            throw new Error('Hạn mức sử dụng Gemini đã hết. Vui lòng nâng cấp gói.');
-        }
+        return { success: true, jobId: job.id, message: 'Đã thêm yêu cầu vào hàng chờ' };
+    }
+
+    async processAutoSubJob(job: any) {
+        const { fileBuffer, srcLang, targetLang, style, fontSize, yPos, userId, subColor, subBgColor, fileName } = job.data.data;
 
         const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
         if (!fs.existsSync(tempDir)) {
             fs.mkdirSync(tempDir, { recursive: true });
         }
 
-        const fileId = uuidv4();
+        // Sử dụng job.id để đồng bộ hóa tên file
+        const fileId = job.id;
         const videoPath = path.join(tempDir, `${fileId}.mp4`);
         const audioPath = path.join(tempDir, `${fileId}.mp3`);
         const srtPath = path.join(tempDir, `${fileId}.srt`);
 
         try {
+            this.logger.log(`[Worker] Bắt đầu xử lý AutoSub cho Job ${job.id}`);
+            await job.updateProgress(10);
+
             // 1. Save uploaded video
-            fs.writeFileSync(videoPath, file.buffer);
+            fs.writeFileSync(videoPath, Buffer.from(fileBuffer));
+            await job.updateProgress(20);
 
             // 2. Extract Audio
             await this.extractAudioWithFFmpeg(videoPath, audioPath);
+            await job.updateProgress(30);
 
-            // 3. Upload Audio to Gemini
-            const fileManager = new GoogleAIFileManager(this.currentGeminiKey);
+            // 3. Upload to Gemini
+            const fileManager = new GoogleAIFileManager(this.currentGeminiKey!);
             const uploadResponse = await fileManager.uploadFile(audioPath, {
                 mimeType: 'audio/mp3',
                 displayName: `audio_${fileId}`,
             });
+            await job.updateProgress(40);
 
-            // 4. Generate SRT Content using Gemini Pro/Flash
+            // 4. Generate SRT
             const prompt = `
-            Ngôn ngữ gốc của âm thanh là: ${srcLang}.
-            Ngôn ngữ bạn cần dịch ra phụ đề là: ${targetLang}.
-            
-            Hãy nghe âm thanh đính kèm, chép lời (transcribe) và tạo ra phụ đề định dạng SRT TỪNG TỪ MỘT. 
-            Mọi khung thời gian phải chính xác với audio. Cấu trúc chuẩn SRT phải tuyệt đối được tuân thủ:
-            1
-            00:00:00,000 --> 00:00:02,100
-            Nội dung câu nói...
-            
-            2
-            00:00:02,200 --> 00:00:05,300
-            Nội dung câu nói tiếp theo...
-            
-            CHỈ In ra nội dung SRT duy nhất. Không bao gồm văn bản giải thích. KHÔNG sử dụng \`\`\`srt formatting mardkown.
-            `;
+                Ngôn ngữ gốc của âm thanh là: ${srcLang}.
+                Ngôn ngữ bạn cần dịch ra phụ đề là: ${targetLang}.
+                
+                Hãy nghe âm thanh đính kèm, chép lời (transcribe) và tạo ra phụ đề định dạng SRT. 
+                Mọi khung thời gian phải chính xác với audio. Cấu trúc chuẩn SRT phải tuyệt đối được tuân thủ.
+                QUY TẮC QUAN TRỌNG:
+                - Mỗi đoạn phụ đề (SRT block) KHÔNG ĐƯỢC vượt quá 8 từ.
+                `;
 
             const result = await this.model.generateContent([
                 {
@@ -2993,36 +3103,33 @@ export class AiService implements OnModuleInit {
 
             let srtContent = result.response.text();
             srtContent = srtContent.replace(/\`\`\`srt|\`\`\`/g, '').trim();
+            await job.updateProgress(70);
 
-            // Cleanup Gemini Cloud file directly using File API to prevent storage leak
-            try {
-                await fileManager.deleteFile(uploadResponse.file.name);
-            } catch (e) {
-                console.warn("Failed to delete File API file:", e.message);
-            }
+            let segments = this.parseSrt(srtContent);
+            segments = this.splitLongSegments(segments, 8);
+            srtContent = this.formatSrt(segments);
 
-            // 5. Save SRT File to temp directory for later Ffmpeg burn
             fs.writeFileSync(srtPath, srtContent, 'utf8');
 
-            await this.trackUsage('gemini');
+            try {
+                await fileManager.deleteFile(uploadResponse.file.name);
+            } catch (e) { }
 
-            // Save basic config to a json for burn API
             const configPath = path.join(tempDir, `${fileId}_config.json`);
-            fs.writeFileSync(configPath, JSON.stringify({ style, fontSize, yPos }), 'utf8');
+            fs.writeFileSync(configPath, JSON.stringify({ style, fontSize, yPos, subColor, subBgColor }), 'utf8');
 
+            await job.updateProgress(100);
             return {
                 success: true,
                 srtContent: srtContent,
                 videoId: fileId
             };
         } catch (error) {
-            console.error('AutoSub Error:', error);
-            // Cleanup temp files if they exist
+            this.logger.error(`[Worker] Lỗi AutoSub Job ${job.id}: ${error.message}`);
             if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
             if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
             if (fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
-
-            throw new InternalServerErrorException('Lỗi trong quá trình tạo phụ đề: ' + error.message);
+            throw error;
         }
     }
 
@@ -3046,15 +3153,19 @@ export class AiService implements OnModuleInit {
         let style = 'tiktok';
         let fontSizeVal = undefined;
         let yPosVal = 80;
+        let subColor = undefined;
+        let subBgColor = undefined;
         if (fs.existsSync(configPath)) {
             const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
             style = cfg.style || 'tiktok';
             fontSizeVal = cfg.fontSize;
             yPosVal = cfg.yPos || 80;
+            subColor = cfg.subColor;
+            subBgColor = cfg.subBgColor;
         }
 
-        console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}`);
-        await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal);
+        console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}, màu ${subColor}/${subBgColor}`);
+        await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal, subColor, subBgColor);
 
         const stat = fs.statSync(outputPath);
         const stream = fs.createReadStream(outputPath);
@@ -3065,8 +3176,8 @@ export class AiService implements OnModuleInit {
         const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
         const videoPath = path.join(tempDir, `${fileId}.mp4`);
         const srtPath = path.join(tempDir, `${fileId}.srt`);
-        const configPath = path.join(tempDir, `${fileId}_config.json`);
-        const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
+        const configPath = path.join(tempDir, `${fileId} _config.json`);
+        const outputPath = path.join(tempDir, `${fileId} _burned.mp4`);
 
         if (!fs.existsSync(outputPath)) {
             if (!fs.existsSync(videoPath) || !fs.existsSync(srtPath)) {
@@ -3076,15 +3187,19 @@ export class AiService implements OnModuleInit {
             let style = 'tiktok';
             let fontSizeVal = undefined;
             let yPosVal = 80;
+            let subColor = undefined;
+            let subBgColor = undefined;
             if (fs.existsSync(configPath)) {
                 const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
                 style = cfg.style || 'tiktok';
                 fontSizeVal = cfg.fontSize;
                 yPosVal = cfg.yPos || 80;
+                subColor = cfg.subColor;
+                subBgColor = cfg.subBgColor;
             }
 
-            console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}`);
-            await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal);
+            console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}, màu ${subColor}/${subBgColor}`);
+            await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal, subColor, subBgColor);
         }
 
         const stat = fs.statSync(outputPath);
@@ -3099,7 +3214,7 @@ export class AiService implements OnModuleInit {
             const chunksize = (end - start) + 1;
             const file = fs.createReadStream(outputPath, { start, end });
             const head = {
-                'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+                'Content-Range': `bytes ${start} -${end}/${fileSize}`,
                 'Accept-Ranges': 'bytes',
                 'Content-Length': chunksize,
                 'Content-Type': 'video/mp4',
@@ -3120,7 +3235,44 @@ export class AiService implements OnModuleInit {
         }
     }
 
-    async updateSrtContent(fileId: string, srtContent: string, style?: string, fontSize?: number, yPos?: number): Promise<any> {
+    async streamDubbedVideo(jobId: string, req: any, res: any): Promise<void> {
+        const jobDir = path.join(process.cwd(), 'uploads', 'dubbing', jobId);
+        const videoPath = path.join(jobDir, 'dubbed_video.mp4');
+
+        if (!fs.existsSync(videoPath)) {
+            throw new Error('Video lồng tiếng không tồn tại hoặc đã bị xóa.');
+        }
+
+        const stat = fs.statSync(videoPath);
+        const fileSize = stat.size;
+        const range = req.headers.range;
+
+        if (range) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+            const chunksize = (end - start) + 1;
+            const file = fs.createReadStream(videoPath, { start, end });
+            const head = {
+                'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': 'video/mp4',
+            };
+            res.writeHead(206, head);
+            file.pipe(res);
+        } else {
+            const head = {
+                'Content-Length': fileSize,
+                'Content-Type': 'video/mp4',
+            };
+            res.writeHead(200, head);
+            fs.createReadStream(videoPath).pipe(res);
+        }
+    }
+
+    async updateSrtContent(fileId: string, srtContent: string, style?: string, fontSize?: number, yPos?: number, subColor?: string, subBgColor?: string): Promise<any> {
         const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
         const srtPath = path.join(tempDir, `${fileId}.srt`);
         const configPath = path.join(tempDir, `${fileId}_config.json`);
@@ -3140,7 +3292,7 @@ export class AiService implements OnModuleInit {
                     currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
                 } catch (e) { }
             }
-            const newConfig = { ...currentConfig, style, fontSize, yPos };
+            const newConfig = { ...currentConfig, style, fontSize, yPos, subColor, subBgColor };
             fs.writeFileSync(configPath, JSON.stringify(newConfig), 'utf8');
         }
         if (fs.existsSync(outputPath)) {
@@ -4172,5 +4324,385 @@ export class AiService implements OnModuleInit {
                 console.warn('[VideoRender] Không thể dọn dẹp thư mục tạm:', e.message);
             }
         }
+    }
+    async generateVideoDubbing(
+        file: any,
+        targetVoice: string,
+        targetLang: string,
+        userId: string,
+        bgVolume: number = 0.4,
+        dubVolume: number = 1.5,
+        showSubtitles: boolean = false,
+        subStyle: { color?: string, fontSize?: number, bgColor?: string, verticalPos?: number } = { color: '#FFFFFF', fontSize: 20, bgColor: '#000000', verticalPos: 30 }
+    ): Promise<any> {
+        if (!this.currentGeminiKey || !this.currentFptKey) {
+            throw new Error('Chưa cấu hình đầy đủ Gemini hoặc FPT.AI API Key');
+        }
+
+        const job = await this.videoQueue.add('video-dubbing', {
+            type: 'video-dubbing',
+            data: {
+                fileBuffer: file.buffer.toJSON(),
+                targetVoice,
+                targetLang,
+                userId,
+                bgVolume,
+                dubVolume,
+                showSubtitles,
+                subStyle,
+                fileName: file.originalname || 'video.mp4'
+            }
+        });
+
+        return { success: true, jobId: job.id, message: 'Yêu cầu lồng tiếng đã được thêm vào hàng chờ' };
+    }
+
+    async processDubbingJob(job: any) {
+        const { fileBuffer, targetVoice, targetLang, userId, bgVolume, dubVolume, showSubtitles, subStyle, fileName } = job.data.data;
+
+        const tempDir = path.join(process.cwd(), 'uploads', 'dubbing');
+        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+
+        // Sử dụng chính job.id làm folder name để đồng bộ với stream endpoint
+        const fileId = job.id;
+        const jobDir = path.join(tempDir, fileId);
+        if (!fs.existsSync(jobDir)) fs.mkdirSync(jobDir);
+
+        const videoPath = path.join(jobDir, 'input_video.mp4');
+        const audioPath = path.join(jobDir, 'original_audio.mp3');
+        const srtPath = path.join(jobDir, 'transcript.srt');
+        const finalVideoPath = path.join(jobDir, 'dubbed_video.mp4');
+
+        try {
+            await job.updateProgress(5);
+            this.logger.log(`[Worker] Bắt đầu lồng tiếng Job ${job.id}`);
+
+            // 1. Lưu video & Trừ phí
+            fs.writeFileSync(videoPath, Buffer.from(fileBuffer));
+            const duration = await this.getVideoDuration(videoPath);
+            const cost = Math.max(2000, Math.ceil(duration / 60) * (this.CREDIT_COSTS as any).VIDEO_DUBBING_PER_MIN);
+            await this.deductCredits(userId, cost, 'Lồng tiếng video');
+            await job.updateProgress(15);
+
+            // 2. Tách âm thanh gốc
+            await this.extractAudioWithFFmpeg(videoPath, audioPath);
+            await job.updateProgress(25);
+
+            // 3. STT với Gemini
+            const fileManager = new GoogleAIFileManager(this.currentGeminiKey!);
+            const uploadResponse = await fileManager.uploadFile(audioPath, {
+                mimeType: 'audio/mp3',
+                displayName: `dub_audio_${fileId}`,
+            });
+
+            const prompt = `
+                Hãy nghe âm thanh và tạo ra phụ đề định dạng SRT CHÍNH XÁC.
+                Ngôn ngữ bạn cần viết SRT: ${targetLang}.
+                QUY TẮC: Một block SRT KHÔNG ĐƯỢC dài quá 8 từ.
+                CHỈ In ra nội dung SRT duy nhất.
+            `;
+
+            const result = await this.model.generateContent([
+                { fileData: { mimeType: uploadResponse.file.mimeType, fileUri: uploadResponse.file.uri } },
+                { text: prompt }
+            ]);
+
+            let srtContent = result.response.text().replace(/\`\`\`srt|\`\`\`/g, '').trim();
+            let srtSegments = this.parseSrt(srtContent);
+            srtSegments = this.splitLongSegments(srtSegments, 8);
+            srtContent = this.formatSrt(srtSegments);
+            fs.writeFileSync(srtPath, srtContent, 'utf8');
+            await fileManager.deleteFile(uploadResponse.file.name);
+            await job.updateProgress(40);
+
+            // 4. TTS từng đoạn
+            const audioSegments: string[] = [];
+            for (let i = 0; i < srtSegments.length; i++) {
+                const segment = srtSegments[i];
+                const segmentAudioPath = path.join(jobDir, `segment_${i}.mp3`);
+                const ttsResponse = await this.generateSpeech({
+                    text: segment.text,
+                    voice: targetVoice,
+                    speed: 0
+                }, userId);
+
+                let audioResponse;
+                let attempts = 0;
+                while (attempts < 5) {
+                    try {
+                        audioResponse = await axios.get(ttsResponse.url, { responseType: 'arraybuffer' });
+                        break;
+                    } catch (err) {
+                        attempts++;
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                }
+                if (!audioResponse) throw new Error('TTS Failed');
+
+                fs.writeFileSync(segmentAudioPath, Buffer.from(audioResponse.data));
+                const originalDuration = segment.end - segment.start;
+                const ttsDuration = await this.getAudioDuration(segmentAudioPath);
+                const stretchedAudioPath = path.join(jobDir, `stretched_${i}.mp3`);
+                const tempo = ttsDuration / originalDuration;
+                await this.stretchAudio(segmentAudioPath, stretchedAudioPath, tempo, originalDuration);
+                audioSegments.push(stretchedAudioPath);
+
+                // Cập nhật tiến độ TTS
+                await job.updateProgress(40 + Math.floor((i / srtSegments.length) * 40));
+            }
+
+            // 5. Muxing
+            await this.muxDubbedVideo(videoPath, audioPath, audioSegments, srtSegments, finalVideoPath, bgVolume, dubVolume, showSubtitles, srtPath, subStyle);
+            await job.updateProgress(95);
+
+            // Lưu lịch sử
+            const db = this.firebaseAdmin.firestore();
+            await db.collection('dubbing_history').add({
+                userId,
+                originalName: fileName,
+                fileId: fileId,
+                timestamp: new Date(),
+                status: 'completed'
+            });
+
+            await job.updateProgress(100);
+            return {
+                success: true,
+                videoId: fileId,
+                jobDir: jobDir
+            };
+        } catch (error) {
+            this.logger.error(`[Worker] Lỗi Dubbing Job ${job.id}: ${error.message}`);
+            if (fs.existsSync(jobDir)) {
+                try {
+                    // Tùy chọn: Xoá thư mục tạm nếu lỗi
+                    // fs.rmSync(jobDir, { recursive: true, force: true });
+                } catch (e) { }
+            }
+            throw error;
+        }
+    }
+
+    private parseSrt(srt: string) {
+        const segments = [];
+        const blocks = srt.split(/\n\s*\n/);
+        for (const block of blocks) {
+            const lines = block.trim().split('\n');
+            if (lines.length >= 3) {
+                const timeMatch = lines[1].match(/(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})/);
+                if (timeMatch) {
+                    segments.push({
+                        start: this.srtTimeToSeconds(timeMatch[1]),
+                        end: this.srtTimeToSeconds(timeMatch[2]),
+                        text: lines.slice(2).join(' ')
+                    });
+                }
+            }
+        }
+        return segments;
+    }
+
+    private srtTimeToSeconds(time: string) {
+        const parts = time.split(':');
+        const secondsParts = parts[2].split(',');
+        return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(secondsParts[0]) + parseInt(secondsParts[1]) / 1000;
+    }
+
+    private async getVideoDuration(filePath: string): Promise<number> {
+        return new Promise((resolve, reject) => {
+            ffmpeg.ffprobe(filePath, (err: any, metadata: any) => {
+                if (err) return reject(err);
+                resolve(metadata.format.duration);
+            });
+        });
+    }
+
+    private async getAudioDuration(filePath: string): Promise<number> {
+        return this.getVideoDuration(filePath);
+    }
+
+    private async stretchAudio(input: string, output: string, tempo: number, targetDuration: number): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const validTempo = Math.max(0.5, Math.min(2.0, tempo));
+            const fadeTime = 0.1; // Tăng thời gian fade lên 0.1s cho mượt hơn
+            const fadeOutStart = Math.max(0, targetDuration - fadeTime);
+
+            ffmpeg(input)
+                .audioFilters([
+                    // Tự động cân bằng âm lượng giọng nói chuẩn studio
+                    'speechnorm=e=6.0:r=0.0001:l=1',
+                    `atempo=${validTempo}`,
+                    // Giới hạn âm đỉnh để không bao giờ bị rè
+                    'alimiter=limit=0.9',
+                    `afade=t=in:st=0:d=${fadeTime}`,
+                    `afade=t=out:st=${fadeOutStart}:d=${fadeTime}`
+                ])
+                .save(output)
+                .on('end', () => resolve())
+                .on('error', (err: any) => reject(err));
+        });
+    }
+
+    private async removeAudioFromVideo(input: string, output: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            ffmpeg(input)
+                .outputOptions('-an')
+                .save(output)
+                .on('end', () => resolve())
+                .on('error', (err: any) => reject(err));
+        });
+    }
+
+    private async muxDubbedVideo(
+        videoPath: string,
+        originalAudioPath: string,
+        audios: string[],
+        segments: any[],
+        output: string,
+        bgVolume: number = 0.3,
+        dubVolume: number = 2.0,
+        showSubtitles: boolean = false,
+        srtPath: string = '',
+        subStyle: { color?: string, fontSize?: number, bgColor?: string, verticalPos?: number } = { color: '#FFFFFF', fontSize: 20, bgColor: '#000000', verticalPos: 30 }
+    ): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (audios.length === 0) {
+                fs.copyFileSync(videoPath, output);
+                return resolve();
+            }
+
+            const command = ffmpeg(videoPath);
+            command.input(originalAudioPath);
+            audios.forEach(a => command.input(a));
+
+            let audioFilter = '';
+
+            // 1. Chuẩn bị tất cả các đoạn lồng tiếng (v0, v1, v2...)
+            audios.forEach((_, i) => {
+                const delayMs = Math.round(segments[i].start * 1000);
+                const duration = segments[i].end - segments[i].start;
+                const fadeDuration = 0.05; // 50ms fade
+
+                // Áp dụng fade-in và fade-out cho từng đoạn để tránh tiếng click và ngắt quãng đột ngột
+                audioFilter += `[${i + 2}:a]afade=t=in:ss=0:d=${fadeDuration},afade=t=out:st=${Math.max(0, duration - fadeDuration)}:d=${fadeDuration},adelay=${delayMs}|${delayMs}[v${i}];`;
+            });
+
+            // 2. Trộn các đoạn lồng tiếng thành 1 luồng duy nhất [vo_mixed]
+            const voMixedPad = audios.length > 1 ? '[vo_mixed]' : '[v0]';
+            if (audios.length > 1) {
+                const mixInputs = audios.map((_, i) => `[v${i}]`).join('');
+                audioFilter += `${mixInputs}amix=inputs=${audios.length}:dropout_transition=1000:normalize=0${voMixedPad};`;
+            }
+
+            audioFilter += `${voMixedPad}asplit=2[vo_ctrl_raw][vo_main];`;
+            // Làm mượt tín hiệu điều khiển hơn nữa để ducking không bị giật cục
+            audioFilter += `[vo_ctrl_raw]lowpass=f=2000,volume=2[vo_ctrl];`;
+
+            // 4. Audio Ducking mượt mà: Nhạc nền [bg] sẽ lùi lại êm ái
+            audioFilter += `[1:a]volume=${bgVolume}[bg_init];`;
+            // Cải thiện Attack (0.15s) và Release (1.5s) để nhạc nền lùi lại/nổi lên tự nhiên hơn
+            audioFilter += `[bg_init][vo_ctrl]sidechaincompress=threshold=0.03:ratio=12:attack=0.15:release=1.5[bg_ducked];`;
+
+            // Áp dụng âm lượng lồng tiếng từ thanh kéo
+            audioFilter += `[vo_main]volume=${dubVolume}[vo_loud];`;
+
+            // 5. Trộn cuối cùng - normalize=0 để giữ nguyên mức âm lượng người dùng cấu hình
+            audioFilter += `[bg_ducked][vo_loud]amix=inputs=2:dropout_transition=2:normalize=0[outa]`;
+
+            if (showSubtitles && srtPath) {
+                // Xử lý path cho Windows khi dùng filter subtitles
+                // Xử lý path cho filter subtitles của FFmpeg
+                // Trên Windows cần escape dấu hai chấm của ổ đĩa (C:\ -> C\\:), trên Linux thì không cần.
+                let escapedSrtPath = srtPath.replace(/\\/g, '/');
+                if (process.platform === 'win32') {
+                    escapedSrtPath = escapedSrtPath.replace(/:/g, '\\:');
+                }
+
+                // Helper để chuyển Hex sang ASS format (BBGGRR)
+                const hexToAss = (hex: string) => {
+                    if (hex && hex.startsWith('#') && hex.length === 7) {
+                        const r = hex.substring(1, 3);
+                        const g = hex.substring(3, 5);
+                        const b = hex.substring(5, 7);
+                        return `${b}${g}${r}`;
+                    }
+                    return 'FFFFFF';
+                };
+
+                const assPrimaryColor = hexToAss(subStyle.color || '#FFFFFF');
+                const assBgColor = hexToAss(subStyle.bgColor || '#000000');
+
+                // PrimaryColour format: &H(Alpha)(BBGGRR). &H00 là đặc hoàn toàn (Opaque)
+                // BorderStyle=3: Chế độ "Opaque box" (nền đặc cho chữ)
+                // BackColour format: &H(Alpha)(BBGGRR). &H80 là độ trong suốt khoảng 50%
+                // Thêm PlayResY=1080 và MarginV từ dưới lên chuẩn (100-verticalPos)*10.8
+                const resolvedDubYPos = subStyle.verticalPos !== undefined ? subStyle.verticalPos : 80;
+                const finalDubMarginV = Math.round((100 - resolvedDubYPos) * 10.8);
+                const style = `force_style='PlayResY=1080,FontSize=${(subStyle.fontSize || 20) * 2},PrimaryColour=&H00${assPrimaryColor},BackColour=&H80${assBgColor},BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=${finalDubMarginV},Fontname=Arial,Bold=1'`;
+                command.videoFilters(`subtitles='${escapedSrtPath}':${style}`);
+            }
+
+            command
+                .complexFilter(audioFilter)
+                .outputOptions([
+                    '-map 0:v',      // Lấy hình ảnh từ video gốc
+                    '-map [outa]',   // Lấy âm thanh đã trộn
+                    showSubtitles ? '-c:v libx264' : '-c:v copy', // Nếu bật sub thì phải re-encode video
+                    '-c:a aac',      // Encode audio sang AAC
+                    '-shortest'      // Kết thúc theo file ngắn nhất
+                ])
+                .save(output)
+                .on('end', () => resolve())
+                .on('error', (err: any) => {
+                    console.error('Lỗi Muxing FFmpeg:', err);
+                    reject(err);
+                });
+        });
+    }
+
+    private splitLongSegments(segments: any[], maxWords: number = 8): any[] {
+        const result = [];
+        for (const seg of segments) {
+            const words = seg.text.split(/\s+/).filter((w: string) => w.length > 0);
+            if (words.length <= maxWords) {
+                result.push(seg);
+                continue;
+            }
+
+            const numParts = Math.ceil(words.length / maxWords);
+            const wordsPerPart = Math.ceil(words.length / numParts);
+            const duration = seg.end - seg.start;
+
+            for (let i = 0; i < numParts; i++) {
+                const partWords = words.slice(i * wordsPerPart, (i + 1) * wordsPerPart);
+                if (partWords.length === 0) continue;
+
+                const partDuration = (partWords.length / words.length) * duration;
+                const partStart = seg.start + (words.slice(0, i * wordsPerPart).length / words.length) * duration;
+                const partEnd = partStart + partDuration;
+
+                result.push({
+                    start: partStart,
+                    end: partEnd,
+                    text: partWords.join(' ')
+                });
+            }
+        }
+        return result;
+    }
+
+    private formatSrt(segments: any[]): string {
+        return segments.map((seg, i) => {
+            return `${i + 1}\n${this.secondsToSrtTime(seg.start)} --> ${this.secondsToSrtTime(seg.end)}\n${seg.text}`;
+        }).join('\n\n');
+    }
+
+    private secondsToSrtTime(seconds: number): string {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        const ms = Math.floor((seconds % 1) * 1000);
+
+        return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
     }
 }

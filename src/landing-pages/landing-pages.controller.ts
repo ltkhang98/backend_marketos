@@ -1,7 +1,9 @@
-import { Controller, Post, Get, Body, Param, Delete } from '@nestjs/common';
+import { Controller, Post, Get, Body, Param, Delete, UseGuards } from '@nestjs/common';
 import { LandingPagesService } from './landing-pages.service';
+import { FirebaseGuard } from '../auth/firebase.guard';
 
 @Controller('landing-pages')
+@UseGuards(FirebaseGuard)
 export class LandingPagesController {
     constructor(private readonly landingPagesService: LandingPagesService) { }
 

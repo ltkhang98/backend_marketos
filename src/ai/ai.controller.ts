@@ -21,18 +21,32 @@ export class AiController {
     }
 
     @Get('download')
-    async download(@Query('url') url: string, @Res() res: Response) {
+    async download(
+        @Query('url') url: string,
+        @Query('filename') filename: string,
+        @Res() res: Response
+    ) {
         try {
             const streamResponse = await this.aiService.downloadProxy(url);
 
-            res.set({
-                'Content-Type': 'audio/mpeg',
-                'Content-Disposition': `attachment; filename="market-os-speech.mp3"`,
-            });
+            // Forward các header quan trọng từ nguồn
+            const contentType = streamResponse.headers['content-type'] || 'application/octet-stream';
+            const contentLength = streamResponse.headers['content-length'];
 
+            const headers: any = {
+                'Content-Type': contentType,
+                'Content-Disposition': `attachment; filename="${filename || 'marketos-download'}"`,
+            };
+
+            if (contentLength) {
+                headers['Content-Length'] = contentLength;
+            }
+
+            res.set(headers);
             streamResponse.data.pipe(res);
         } catch (error) {
-            res.status(500).send('Lỗi khi tải file: ' + error.message);
+            console.error('Download Proxy Error:', error.message);
+            res.status(500).send('Lỗi khi tải file qua proxy: ' + error.message);
         }
     }
 
@@ -218,12 +232,14 @@ export class AiController {
         @Body('style') style: string,
         @Body('fontSize') fontSize: number,
         @Body('yPos') yPos: number,
+        @Body('subColor') subColor: string,
+        @Body('subBgColor') subBgColor: string,
         @Req() req: any
     ) {
         if (!file) {
             throw new InternalServerErrorException('Không tìm thấy file video tải lên.');
         }
-        return await this.aiService.generateAutoSubtitles(file, srcLang || 'Auto', targetLang || 'Vietnamese', style || 'tiktok', fontSize, yPos, req.user.uid);
+        return await this.aiService.generateAutoSubtitles(file, srcLang || 'Auto', targetLang || 'Vietnamese', style || 'tiktok', fontSize, yPos, req.user.uid, subColor, subBgColor);
     }
 
     @Get('stream-sub-video/:id')
@@ -261,10 +277,12 @@ export class AiController {
         @Body('style') style: string,
         @Body('fontSize') fontSize: number,
         @Body('yPos') yPos: number,
+        @Body('subColor') subColor: string,
+        @Body('subBgColor') subBgColor: string,
         @Req() req: any
     ) {
         // Update sub cũng có thể tính phí nhẹ hoặc không tùy anh, hiện tại em để miễn phí vì là chỉnh sửa
-        return await this.aiService.updateSrtContent(videoId, srtContent, style, fontSize, yPos);
+        return await this.aiService.updateSrtContent(videoId, srtContent, style, fontSize, yPos, subColor, subBgColor);
     }
 
     @UseGuards(FirebaseGuard)
@@ -287,5 +305,58 @@ export class AiController {
             console.error('Lỗi API render-video:', error);
             throw new InternalServerErrorException(error.message);
         }
+    }
+
+    @Get('stream-dub-video/:jobId')
+    async streamDubbedVideo(@Param('jobId') jobId: string, @Req() req: any, @Res() res: Response) {
+        try {
+            await this.aiService.streamDubbedVideo(jobId, req, res);
+        } catch (error) {
+            if (!res.headersSent) {
+                res.status(500).send('Lỗi khi xem video lồng tiếng: ' + error.message);
+            }
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('video-dubbing')
+    @UseInterceptors(FileInterceptor('video'))
+    async videoDubbing(
+        @UploadedFile() file: any,
+        @Body('targetVoice') targetVoice: string,
+        @Body('targetLang') targetLang: string,
+        @Body('bgVolume') bgVolume: string,
+        @Body('dubVolume') dubVolume: string,
+        @Body('showSubtitles') showSubtitles: string,
+        @Body('subColor') subColor: string,
+        @Body('subFontSize') subFontSize: string,
+        @Body('subBgColor') subBgColor: string,
+        @Body('subVerticalPos') subVerticalPos: string,
+        @Req() req: any
+    ) {
+        if (!file) {
+            throw new InternalServerErrorException('Không tìm thấy file video tải lên.');
+        }
+        return await this.aiService.generateVideoDubbing(
+            file,
+            targetVoice || 'banmai',
+            targetLang || 'Vietnamese',
+            req.user.uid,
+            bgVolume ? parseFloat(bgVolume) : 0.4,
+            dubVolume ? parseFloat(dubVolume) : 1.5,
+            showSubtitles === 'true',
+            {
+                color: subColor || '#FFFFFF',
+                fontSize: subFontSize ? parseInt(subFontSize) : 20,
+                bgColor: subBgColor || '#000000',
+                verticalPos: subVerticalPos ? parseInt(subVerticalPos) : 30
+            }
+        );
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Get('job-status/:jobId')
+    async getJobStatus(@Param('jobId') jobId: string) {
+        return this.aiService.getJobStatus(jobId);
     }
 }

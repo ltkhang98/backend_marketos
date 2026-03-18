@@ -1,4 +1,6 @@
 import type { Request, Response } from 'express';
 export declare class BuilderController {
-    handleBuilder(req: Request, res: Response): Promise<void>;
+    handleBuilder(req: Request & {
+        user?: any;
+    }, res: Response): Promise<void>;
 }

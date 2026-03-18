@@ -1,8 +1,10 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards } from '@nestjs/common';
 import { MailService } from '../mail/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { FirebaseGuard } from '../auth/firebase.guard';
 
 @Controller('store-orders')
+@UseGuards(FirebaseGuard)
 export class StoreOrdersController {
     constructor(
         private readonly mailService: MailService,
@@ -29,7 +31,7 @@ export class StoreOrdersController {
 
         return {
             success,
-            message: success ? 'Email confirmation sent' : 'Failed to send email confirmation',
+            message: success ? 'Email confirmation sent' : 'Không thể gửi email xác nhận. Vui lòng kiểm tra cấu hình SMTP trong file .env (App Password Gmail có thể đã hết hạn hoặc sai).',
         };
     }
 }

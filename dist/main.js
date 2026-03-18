@@ -10,20 +10,21 @@ async function bootstrap() {
             const allowedOrigins = [
                 'https://marketos.vn',
                 'https://www.marketos.vn',
+                'https://api.marketos.vn',
                 'https://marketos-9b845.web.app',
                 'https://marketos-9b845.firebaseapp.com',
-                'http://localhost:5173'
             ];
-            if (!origin || allowedOrigins.some(o => origin.startsWith(o)) || origin.includes('localhost') || origin.includes('127.0.0.1')) {
+            const isLocal = !origin || origin.includes('localhost') || origin.includes('127.0.0.1');
+            if (isLocal || allowedOrigins.some(o => origin && origin.startsWith(o))) {
                 callback(null, true);
             }
             else {
-                callback(new Error('Not allowed by CORS'));
+                callback(null, false);
             }
         },
         methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
         credentials: true,
-        allowedHeaders: 'Content-Type, Authorization, Accept, X-Requested-With',
+        allowedHeaders: 'Content-Type, Authorization, Accept, X-Requested-With, Origin, Access-Control-Request-Method, Access-Control-Request-Headers',
     });
     app.use((req, res, next) => {
         if (req.url === '/api/payments/webhook' || req.url === '/api/payments/sepay-webhook') {

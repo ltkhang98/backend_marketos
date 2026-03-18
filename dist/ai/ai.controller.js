@@ -28,17 +28,24 @@ let AiController = class AiController {
     async textToSpeech(body, req) {
         return this.aiService.generateSpeech(body, req.user.uid);
     }
-    async download(url, res) {
+    async download(url, filename, res) {
         try {
             const streamResponse = await this.aiService.downloadProxy(url);
-            res.set({
-                'Content-Type': 'audio/mpeg',
-                'Content-Disposition': `attachment; filename="market-os-speech.mp3"`,
-            });
+            const contentType = streamResponse.headers['content-type'] || 'application/octet-stream';
+            const contentLength = streamResponse.headers['content-length'];
+            const headers = {
+                'Content-Type': contentType,
+                'Content-Disposition': `attachment; filename="${filename || 'marketos-download'}"`,
+            };
+            if (contentLength) {
+                headers['Content-Length'] = contentLength;
+            }
+            res.set(headers);
             streamResponse.data.pipe(res);
         }
         catch (error) {
-            res.status(500).send('Lỗi khi tải file: ' + error.message);
+            console.error('Download Proxy Error:', error.message);
+            res.status(500).send('Lỗi khi tải file qua proxy: ' + error.message);
         }
     }
     async generateMockup(body, req) {
@@ -160,11 +167,11 @@ let AiController = class AiController {
             throw new common_1.InternalServerErrorException(error.message);
         }
     }
-    async autoSubtitles(file, srcLang, targetLang, style, fontSize, yPos, req) {
+    async autoSubtitles(file, srcLang, targetLang, style, fontSize, yPos, subColor, subBgColor, req) {
         if (!file) {
             throw new common_1.InternalServerErrorException('Không tìm thấy file video tải lên.');
         }
-        return await this.aiService.generateAutoSubtitles(file, srcLang || 'Auto', targetLang || 'Vietnamese', style || 'tiktok', fontSize, yPos, req.user.uid);
+        return await this.aiService.generateAutoSubtitles(file, srcLang || 'Auto', targetLang || 'Vietnamese', style || 'tiktok', fontSize, yPos, req.user.uid, subColor, subBgColor);
     }
     async streamBurnedVideo(id, req, res) {
         try {
@@ -190,8 +197,8 @@ let AiController = class AiController {
             res.status(500).send('Lỗi khi tải video: ' + error.message);
         }
     }
-    async updateSubtitles(videoId, srtContent, style, fontSize, yPos, req) {
-        return await this.aiService.updateSrtContent(videoId, srtContent, style, fontSize, yPos);
+    async updateSubtitles(videoId, srtContent, style, fontSize, yPos, subColor, subBgColor, req) {
+        return await this.aiService.updateSrtContent(videoId, srtContent, style, fontSize, yPos, subColor, subBgColor);
     }
     async runAutomation(id, body, req) {
         try {
@@ -211,6 +218,30 @@ let AiController = class AiController {
             console.error('Lỗi API render-video:', error);
             throw new common_1.InternalServerErrorException(error.message);
         }
+    }
+    async streamDubbedVideo(jobId, req, res) {
+        try {
+            await this.aiService.streamDubbedVideo(jobId, req, res);
+        }
+        catch (error) {
+            if (!res.headersSent) {
+                res.status(500).send('Lỗi khi xem video lồng tiếng: ' + error.message);
+            }
+        }
+    }
+    async videoDubbing(file, targetVoice, targetLang, bgVolume, dubVolume, showSubtitles, subColor, subFontSize, subBgColor, subVerticalPos, req) {
+        if (!file) {
+            throw new common_1.InternalServerErrorException('Không tìm thấy file video tải lên.');
+        }
+        return await this.aiService.generateVideoDubbing(file, targetVoice || 'banmai', targetLang || 'Vietnamese', req.user.uid, bgVolume ? parseFloat(bgVolume) : 0.4, dubVolume ? parseFloat(dubVolume) : 1.5, showSubtitles === 'true', {
+            color: subColor || '#FFFFFF',
+            fontSize: subFontSize ? parseInt(subFontSize) : 20,
+            bgColor: subBgColor || '#000000',
+            verticalPos: subVerticalPos ? parseInt(subVerticalPos) : 30
+        });
+    }
+    async getJobStatus(jobId) {
+        return this.aiService.getJobStatus(jobId);
     }
 };
 exports.AiController = AiController;
@@ -235,9 +266,10 @@ __decorate([
 __decorate([
     (0, common_1.Get)('download'),
     __param(0, (0, common_1.Query)('url')),
-    __param(1, (0, common_1.Res)()),
+    __param(1, (0, common_1.Query)('filename')),
+    __param(2, (0, common_1.Res)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:paramtypes", [String, String, Object]),
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "download", null);
 __decorate([
@@ -422,9 +454,11 @@ __decorate([
     __param(3, (0, common_1.Body)('style')),
     __param(4, (0, common_1.Body)('fontSize')),
     __param(5, (0, common_1.Body)('yPos')),
-    __param(6, (0, common_1.Req)()),
+    __param(6, (0, common_1.Body)('subColor')),
+    __param(7, (0, common_1.Body)('subBgColor')),
+    __param(8, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object, String, String, String, Number, Number, Object]),
+    __metadata("design:paramtypes", [Object, String, String, String, Number, Number, String, String, Object]),
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "autoSubtitles", null);
 __decorate([
@@ -452,9 +486,11 @@ __decorate([
     __param(2, (0, common_1.Body)('style')),
     __param(3, (0, common_1.Body)('fontSize')),
     __param(4, (0, common_1.Body)('yPos')),
-    __param(5, (0, common_1.Req)()),
+    __param(5, (0, common_1.Body)('subColor')),
+    __param(6, (0, common_1.Body)('subBgColor')),
+    __param(7, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String, String, Number, Number, Object]),
+    __metadata("design:paramtypes", [String, String, String, Number, Number, String, String, Object]),
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "updateSubtitles", null);
 __decorate([
@@ -477,6 +513,42 @@ __decorate([
     __metadata("design:paramtypes", [String, Object, Object]),
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "renderAutomationVideo", null);
+__decorate([
+    (0, common_1.Get)('stream-dub-video/:jobId'),
+    __param(0, (0, common_1.Param)('jobId')),
+    __param(1, (0, common_1.Req)()),
+    __param(2, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "streamDubbedVideo", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('video-dubbing'),
+    (0, common_1.UseInterceptors)((0, platform_express_1.FileInterceptor)('video')),
+    __param(0, (0, common_1.UploadedFile)()),
+    __param(1, (0, common_1.Body)('targetVoice')),
+    __param(2, (0, common_1.Body)('targetLang')),
+    __param(3, (0, common_1.Body)('bgVolume')),
+    __param(4, (0, common_1.Body)('dubVolume')),
+    __param(5, (0, common_1.Body)('showSubtitles')),
+    __param(6, (0, common_1.Body)('subColor')),
+    __param(7, (0, common_1.Body)('subFontSize')),
+    __param(8, (0, common_1.Body)('subBgColor')),
+    __param(9, (0, common_1.Body)('subVerticalPos')),
+    __param(10, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, String, String, String, String, String, String, String, String, String, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "videoDubbing", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Get)('job-status/:jobId'),
+    __param(0, (0, common_1.Param)('jobId')),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "getJobStatus", null);
 exports.AiController = AiController = __decorate([
     (0, common_1.Controller)('ai'),
     __metadata("design:paramtypes", [ai_service_1.AiService])

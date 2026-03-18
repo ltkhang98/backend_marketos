@@ -1,6 +1,12 @@
 # compiled output
 /node_modules
 /build
+/temp
+
+uploads/
+temp_vibe_subs/
+*.mp4
+*.mp3
 
 # Logs
 logs

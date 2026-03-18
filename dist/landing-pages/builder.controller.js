@@ -49,16 +49,34 @@ exports.BuilderController = void 0;
 const common_1 = require("@nestjs/common");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const firebase_guard_1 = require("../auth/firebase.guard");
 process.env.NODE_ENV = 'development';
 const { handleEditor } = require('destack/build/server');
 let BuilderController = class BuilderController {
     async handleBuilder(req, res) {
-        if (req.method === 'POST' && req.query.type === 'data' && typeof req.query.path === 'string') {
+        const queryPath = req.query.path;
+        const type = req.query.type;
+        if (type === 'data' && typeof queryPath !== 'string') {
+            throw new common_1.BadRequestException('Tham số path là bắt buộc để xử lý dữ liệu');
+        }
+        if (typeof queryPath === 'string') {
+            const sanitizedPath = queryPath.replace(/\.\./g, '').replace(/[^\w\s\-\.\/]/gi, '').replace(/^\/+/, '');
+            const userUid = req.user?.uid;
+            if (!userUid) {
+                throw new common_1.BadRequestException('Không xác định được danh tính người dùng');
+            }
+            const isolatedPath = path.join('users', userUid, sanitizedPath);
+            req.query.path = isolatedPath;
             const dataDir = path.join(process.cwd(), 'data');
-            const targetPath = path.join(dataDir, req.query.path);
-            const targetDir = path.dirname(targetPath);
+            const fullTargetPath = path.join(dataDir, isolatedPath);
+            const targetDir = path.dirname(fullTargetPath);
             if (!fs.existsSync(targetDir)) {
-                fs.mkdirSync(targetDir, { recursive: true });
+                try {
+                    fs.mkdirSync(targetDir, { recursive: true });
+                }
+                catch (err) {
+                    console.error('Lỗi tạo thư mục:', err);
+                }
             }
         }
         const originalSend = res.send;
@@ -81,7 +99,8 @@ let BuilderController = class BuilderController {
 };
 exports.BuilderController = BuilderController;
 __decorate([
-    (0, common_1.All)('handle'),
+    (0, common_1.All)(),
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
     __param(0, (0, common_1.Req)()),
     __param(1, (0, common_1.Res)()),
     __metadata("design:type", Function),
@@ -89,6 +108,6 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], BuilderController.prototype, "handleBuilder", null);
 exports.BuilderController = BuilderController = __decorate([
-    (0, common_1.Controller)('builder')
+    (0, common_1.Controller)('builder/handle')
 ], BuilderController);
 //# sourceMappingURL=builder.controller.js.map

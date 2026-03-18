@@ -15,6 +15,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.LandingPagesController = void 0;
 const common_1 = require("@nestjs/common");
 const landing_pages_service_1 = require("./landing-pages.service");
+const firebase_guard_1 = require("../auth/firebase.guard");
 let LandingPagesController = class LandingPagesController {
     landingPagesService;
     constructor(landingPagesService) {
@@ -65,6 +66,7 @@ __decorate([
 ], LandingPagesController.prototype, "deletePage", null);
 exports.LandingPagesController = LandingPagesController = __decorate([
     (0, common_1.Controller)('landing-pages'),
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
     __metadata("design:paramtypes", [landing_pages_service_1.LandingPagesService])
 ], LandingPagesController);
 //# sourceMappingURL=landing-pages.controller.js.map

@@ -9,7 +9,7 @@ export declare class AiController {
         voice: string;
         speed: number;
     }, req: any): Promise<any>;
-    download(url: string, res: Response): Promise<void>;
+    download(url: string, filename: string, res: Response): Promise<void>;
     generateMockup(body: {
         prompt: string;
         productImage?: string;
@@ -69,10 +69,10 @@ export declare class AiController {
     generateLandingPage(body: {
         prompt: string;
     }): Promise<any>;
-    autoSubtitles(file: any, srcLang: string, targetLang: string, style: string, fontSize: number, yPos: number, req: any): Promise<any>;
+    autoSubtitles(file: any, srcLang: string, targetLang: string, style: string, fontSize: number, yPos: number, subColor: string, subBgColor: string, req: any): Promise<any>;
     streamBurnedVideo(id: string, req: any, res: Response): Promise<void>;
     downloadBurnedVideo(id: string, res: Response): Promise<void>;
-    updateSubtitles(videoId: string, srtContent: string, style: string, fontSize: number, yPos: number, req: any): Promise<any>;
+    updateSubtitles(videoId: string, srtContent: string, style: string, fontSize: number, yPos: number, subColor: string, subBgColor: string, req: any): Promise<any>;
     runAutomation(id: string, body: {
         isTest?: boolean;
     }, req: any): Promise<void>;
@@ -81,5 +81,14 @@ export declare class AiController {
     }, req: any): Promise<{
         success: boolean;
         videoUrl: string;
+    }>;
+    streamDubbedVideo(jobId: string, req: any, res: Response): Promise<void>;
+    videoDubbing(file: any, targetVoice: string, targetLang: string, bgVolume: string, dubVolume: string, showSubtitles: string, subColor: string, subFontSize: string, subBgColor: string, subVerticalPos: string, req: any): Promise<any>;
+    getJobStatus(jobId: string): Promise<{
+        id: string | undefined;
+        state: import("bullmq").JobState | "unknown";
+        progress: any;
+        result: any;
+        reason: string;
     }>;
 }

@@ -51,14 +51,20 @@ let MailService = class MailService {
     transporter;
     constructor(configService) {
         this.configService = configService;
+        const host = this.configService.get('SMTP_HOST');
+        const port = parseInt(this.configService.get('SMTP_PORT') || '587');
+        console.log(`[MailService] Khởi tạo SMTP với host: ${host}, port: ${port}`);
         this.transporter = nodemailer.createTransport({
-            host: this.configService.get('SMTP_HOST'),
-            port: this.configService.get('SMTP_PORT'),
-            secure: false,
+            host,
+            port,
+            secure: port === 465,
             auth: {
                 user: this.configService.get('SMTP_USER'),
                 pass: this.configService.get('SMTP_PASS'),
             },
+            tls: {
+                rejectUnauthorized: false
+            }
         });
     }
     async sendOrderConfirmation(to, orderId, customerName) {
@@ -78,17 +84,27 @@ let MailService = class MailService {
       </div>
     `;
         try {
+            console.log(`[MailService] Đang gửi email confirmation đến: ${to}...`);
             await this.transporter.sendMail({
                 from,
                 to,
                 subject: `Xác nhận đơn hàng đặt thành công #${orderId}`,
                 html,
             });
-            console.log(`Email đã được gửi thành công đến: ${to}`);
+            console.log(`[MailService] Email đã được gửi thành công đến: ${to}`);
             return true;
         }
         catch (error) {
-            console.error('Lỗi khi gửi email:', error);
+            console.error('[MailService] Lỗi khi gửi email:', {
+                message: error.message,
+                stack: error.stack,
+                config: {
+                    host: this.configService.get('SMTP_HOST'),
+                    port: this.configService.get('SMTP_PORT'),
+                    user: this.configService.get('SMTP_USER'),
+                    from
+                }
+            });
             return false;
         }
     }
