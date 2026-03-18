@@ -2707,7 +2707,10 @@ let AiService = AiService_1 = class AiService {
                 '-c:a copy'
             ])
                 .save(outputPath)
-                .on('end', () => resolve())
+                .on('end', () => {
+                console.log('--- Đã thêm phụ đề thành công ---');
+                resolve();
+            })
                 .on('error', (err) => reject(new Error('Lỗi ghi phụ đề vào video: ' + err.message)));
         });
     }
@@ -2786,6 +2789,10 @@ let AiService = AiService_1 = class AiService {
             catch (e) { }
             const configPath = path.join(tempDir, `${fileId}_config.json`);
             fs.writeFileSync(configPath, JSON.stringify({ style, fontSize, yPos, subColor, subBgColor }), 'utf8');
+            await job.updateProgress(80);
+            const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
+            this.logger.log(`[Worker] Bắt đầu Burn phụ đề cho Job ${job.id}`);
+            await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style || 'tiktok', fontSize, yPos, subColor, subBgColor);
             await job.updateProgress(100);
             return {
                 success: true,
@@ -2819,17 +2826,17 @@ let AiService = AiService_1 = class AiService {
             throw new Error('Video id không hợp lệ hoặc đã hết hạn.');
         }
         let style = 'tiktok';
-        let fontSizeVal = undefined;
+        let fontSizeVal = 36;
         let yPosVal = 80;
-        let subColor = undefined;
-        let subBgColor = undefined;
+        let subColor = '#FFFF00';
+        let subBgColor = '#000000';
         if (fs.existsSync(configPath)) {
             const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
             style = cfg.style || 'tiktok';
-            fontSizeVal = cfg.fontSize;
+            fontSizeVal = cfg.fontSize || 36;
             yPosVal = cfg.yPos || 80;
-            subColor = cfg.subColor;
-            subBgColor = cfg.subBgColor;
+            subColor = cfg.subColor || '#FFFF00';
+            subBgColor = cfg.subBgColor || '#000000';
         }
         console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}, màu ${subColor}/${subBgColor}`);
         await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal, subColor, subBgColor);
@@ -2841,24 +2848,24 @@ let AiService = AiService_1 = class AiService {
         const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
         const videoPath = path.join(tempDir, `${fileId}.mp4`);
         const srtPath = path.join(tempDir, `${fileId}.srt`);
-        const configPath = path.join(tempDir, `${fileId} _config.json`);
-        const outputPath = path.join(tempDir, `${fileId} _burned.mp4`);
+        const configPath = path.join(tempDir, `${fileId}_config.json`);
+        const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
         if (!fs.existsSync(outputPath)) {
             if (!fs.existsSync(videoPath) || !fs.existsSync(srtPath)) {
                 throw new Error('Video id không hợp lệ hoặc đã hết hạn.');
             }
             let style = 'tiktok';
-            let fontSizeVal = undefined;
+            let fontSizeVal = 36;
             let yPosVal = 80;
-            let subColor = undefined;
-            let subBgColor = undefined;
+            let subColor = '#FFFF00';
+            let subBgColor = '#000000';
             if (fs.existsSync(configPath)) {
                 const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
                 style = cfg.style || 'tiktok';
-                fontSizeVal = cfg.fontSize;
+                fontSizeVal = cfg.fontSize || 36;
                 yPosVal = cfg.yPos || 80;
-                subColor = cfg.subColor;
-                subBgColor = cfg.subBgColor;
+                subColor = cfg.subColor || '#FFFF00';
+                subBgColor = cfg.subBgColor || '#000000';
             }
             console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}, màu ${subColor}/${subBgColor}`);
             await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal, subColor, subBgColor);

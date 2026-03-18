@@ -239,7 +239,7 @@ export class AiController {
         if (!file) {
             throw new InternalServerErrorException('Không tìm thấy file video tải lên.');
         }
-        return await this.aiService.generateAutoSubtitles(file, srcLang || 'Auto', targetLang || 'Vietnamese', style || 'tiktok', fontSize, yPos, req.user.uid, subColor, subBgColor);
+        return await this.aiService.generateAutoSubtitles(file, srcLang || 'Auto', targetLang || 'Vietnamese', style || 'tiktok', Number(fontSize), Number(yPos), req.user.uid, subColor, subBgColor);
     }
 
     @Get('stream-sub-video/:id')
@@ -282,7 +282,7 @@ export class AiController {
         @Req() req: any
     ) {
         // Update sub cũng có thể tính phí nhẹ hoặc không tùy anh, hiện tại em để miễn phí vì là chỉnh sửa
-        return await this.aiService.updateSrtContent(videoId, srtContent, style, fontSize, yPos, subColor, subBgColor);
+        return await this.aiService.updateSrtContent(videoId, srtContent, style, Number(fontSize), Number(yPos), subColor, subBgColor);
     }
 
     @UseGuards(FirebaseGuard)

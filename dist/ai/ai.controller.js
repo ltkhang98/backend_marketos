@@ -171,7 +171,7 @@ let AiController = class AiController {
         if (!file) {
             throw new common_1.InternalServerErrorException('Không tìm thấy file video tải lên.');
         }
-        return await this.aiService.generateAutoSubtitles(file, srcLang || 'Auto', targetLang || 'Vietnamese', style || 'tiktok', fontSize, yPos, req.user.uid, subColor, subBgColor);
+        return await this.aiService.generateAutoSubtitles(file, srcLang || 'Auto', targetLang || 'Vietnamese', style || 'tiktok', Number(fontSize), Number(yPos), req.user.uid, subColor, subBgColor);
     }
     async streamBurnedVideo(id, req, res) {
         try {
@@ -198,7 +198,7 @@ let AiController = class AiController {
         }
     }
     async updateSubtitles(videoId, srtContent, style, fontSize, yPos, subColor, subBgColor, req) {
-        return await this.aiService.updateSrtContent(videoId, srtContent, style, fontSize, yPos, subColor, subBgColor);
+        return await this.aiService.updateSrtContent(videoId, srtContent, style, Number(fontSize), Number(yPos), subColor, subBgColor);
     }
     async runAutomation(id, body, req) {
         try {
