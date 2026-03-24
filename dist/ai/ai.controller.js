@@ -51,6 +51,12 @@ let AiController = class AiController {
     async generateMockup(body, req) {
         return this.aiService.generateImageMockup(body.prompt, body.productImage, body.logoImage, body.modelImage, body.aspectRatio, req.user.uid);
     }
+    async generateKocProduct(body, req) {
+        return this.aiService.generateKocProductImage(body.kocId, body.productImage, body.prompt, req.user.uid, body.modelImage, body.bgImage);
+    }
+    async generateKocVisual(body, req) {
+        return this.aiService.generateKocVisual(body, req.user.uid);
+    }
     async generateSmartBanner(body, req) {
         return this.aiService.generateSmartBanner(body, req.user.uid);
     }
@@ -229,6 +235,20 @@ let AiController = class AiController {
             }
         }
     }
+    async downloadDubbedVideo(jobId, res) {
+        try {
+            const { stream, size } = await this.aiService.downloadDubbedVideo(jobId);
+            res.set({
+                'Content-Type': 'video/mp4',
+                'Content-Length': size.toString(),
+                'Content-Disposition': 'attachment; filename="dubbed-video-' + jobId + '.mp4"',
+            });
+            stream.pipe(res);
+        }
+        catch (error) {
+            res.status(500).send('Lỗi khi tải video lồng tiếng: ' + error.message);
+        }
+    }
     async videoDubbing(file, targetVoice, targetLang, bgVolume, dubVolume, showSubtitles, subColor, subFontSize, subBgColor, subVerticalPos, req) {
         if (!file) {
             throw new common_1.InternalServerErrorException('Không tìm thấy file video tải lên.');
@@ -241,7 +261,42 @@ let AiController = class AiController {
         });
     }
     async getJobStatus(jobId) {
-        return this.aiService.getJobStatus(jobId);
+        try {
+            return await this.aiService.getJobStatus(jobId);
+        }
+        catch (error) {
+            console.error(`[AiController] Lỗi getJobStatus(jobId=${jobId}):`, error);
+            return {
+                id: jobId,
+                state: 'failed',
+                progress: 0,
+                reason: 'Internal Server Error: ' + (error.message || String(error))
+            };
+        }
+    }
+    async removeBackground(body, req) {
+        return this.aiService.removeBackground(body.imageUrl, req.user.uid);
+    }
+    async enhanceImage(body, req) {
+        return this.aiService.enhanceImage(body.imageUrl, req.user.uid);
+    }
+    async generateVisualClone(body, req) {
+        return this.aiService.generateVisualClone(body.modelImage, body.templatePrompt, req.user.uid, body.templateImage, body.count, body.fidelity, body.creativity);
+    }
+    async generateKolVideo(body, req) {
+        if (!body.imageUrl || !body.videoUrl) {
+            throw new Error('Bắt buộc phải có ảnh nhân vật và video mẫu.');
+        }
+        return this.aiService.generateKolVideo(body.imageUrl, body.videoUrl, req.user.uid);
+    }
+    async getAiKocs(req) {
+        return this.aiService.getAiKocs(req.user.uid);
+    }
+    async createAiKoc(body, req) {
+        return this.aiService.createAiKoc(body, req.user.uid);
+    }
+    async deleteAiKoc(id, req) {
+        return this.aiService.deleteAiKoc(id, req.user.uid);
     }
 };
 exports.AiController = AiController;
@@ -281,6 +336,24 @@ __decorate([
     __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "generateMockup", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('generate-koc-product'),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "generateKocProduct", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('generate-koc-visual'),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "generateKocVisual", null);
 __decorate([
     (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
     (0, common_1.Post)('generate-smart-banner'),
@@ -523,6 +596,14 @@ __decorate([
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "streamDubbedVideo", null);
 __decorate([
+    (0, common_1.Get)('download-dub-video/:jobId'),
+    __param(0, (0, common_1.Param)('jobId')),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "downloadDubbedVideo", null);
+__decorate([
     (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
     (0, common_1.Post)('video-dubbing'),
     (0, common_1.UseInterceptors)((0, platform_express_1.FileInterceptor)('video')),
@@ -549,6 +630,68 @@ __decorate([
     __metadata("design:paramtypes", [String]),
     __metadata("design:returntype", Promise)
 ], AiController.prototype, "getJobStatus", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('remove-bg'),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "removeBackground", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('enhance-image'),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "enhanceImage", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('visual-clone'),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "generateVisualClone", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('generate-kol-video'),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "generateKolVideo", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Get)('koc'),
+    __param(0, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "getAiKocs", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Post)('koc'),
+    __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "createAiKoc", null);
+__decorate([
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    (0, common_1.Delete)('koc/:id'),
+    __param(0, (0, common_1.Param)('id')),
+    __param(1, (0, common_1.Req)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [String, Object]),
+    __metadata("design:returntype", Promise)
+], AiController.prototype, "deleteAiKoc", null);
 exports.AiController = AiController = __decorate([
     (0, common_1.Controller)('ai'),
     __metadata("design:paramtypes", [ai_service_1.AiService])

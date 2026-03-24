@@ -7,6 +7,7 @@ export declare class FacebookController {
         pageId: string;
         message: string;
         imageUrl?: string;
+        imageUrls?: string[];
     }): Promise<any>;
     exchangeToken(body: {
         shortLivedToken: string;

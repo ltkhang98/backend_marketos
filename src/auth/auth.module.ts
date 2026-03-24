@@ -10,7 +10,7 @@ import { PassportModule } from '@nestjs/passport';
         UsersModule,
         PassportModule,
         JwtModule.register({
-            secret: 'SECRET_KEY', // Trong thực tế nên dùng env
+            secret: process.env.JWT_SECRET || 'fallback_secret',
             signOptions: { expiresIn: '1d' },
         }),
     ],

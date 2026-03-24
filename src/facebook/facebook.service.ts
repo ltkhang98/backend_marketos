@@ -88,7 +88,7 @@ export class FacebookService {
         }
     }
 
-    async postToPage(pageAccessToken: string, pageId: string, message: string, imageUrl?: string) {
+    async postToPage(pageAccessToken: string, pageId: string, message: string, imageUrl?: string, imageUrls?: string[]) {
         try {
             if (!pageAccessToken) {
                 throw new Error('Mã truy cập Fanpage (Access Token) bị thiếu.');
@@ -103,7 +103,46 @@ export class FacebookService {
                 'Content-Type': 'application/x-www-form-urlencoded'
             };
 
-            if (imageUrl && imageUrl.startsWith('http')) {
+            if (imageUrls && imageUrls.length > 0) {
+                if (imageUrls.length === 1) {
+                    const params = new URLSearchParams();
+                    params.append('url', imageUrls[0]);
+                    params.append('caption', message);
+                    params.append('published', 'true');
+
+                    response = await axios.post(
+                        `https://graph.facebook.com/v19.0/${cleanPageId}/photos`,
+                        params.toString(),
+                        { headers }
+                    );
+                } else {
+                    // Upload multiple photos as unpublished first
+                    const mediaIds = [];
+                    for (const imgUrl of imageUrls) {
+                        const params = new URLSearchParams();
+                        params.append('url', imgUrl);
+                        params.append('published', 'false');
+
+                        const photoRes = await axios.post(
+                            `https://graph.facebook.com/v19.0/${cleanPageId}/photos`,
+                            params.toString(),
+                            { headers }
+                        );
+                        mediaIds.push({ media_fbid: photoRes.data.id });
+                    }
+
+                    // Create post with attached media
+                    const feedParams = new URLSearchParams();
+                    feedParams.append('message', message);
+                    feedParams.append('attached_media', JSON.stringify(mediaIds));
+
+                    response = await axios.post(
+                        `https://graph.facebook.com/v19.0/${cleanPageId}/feed`,
+                        feedParams.toString(),
+                        { headers }
+                    );
+                }
+            } else if (imageUrl && imageUrl.startsWith('http')) {
                 // Sử dụng URLSearchParams để gửi dữ liệu dạng form-urlencoded (chuẩn nhất cho FB Photos API)
                 const params = new URLSearchParams();
                 params.append('url', imageUrl);

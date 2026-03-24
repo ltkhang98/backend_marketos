@@ -17,6 +17,11 @@ import * as admin from 'firebase-admin';
                     serviceAccount = require('../../firebase-adminsdk.json');
                 }
 
+                // Kiểm tra nếu app đã được khởi tạo (ví dụ ở main.ts) thì dùng lại
+                if (admin.apps.length) {
+                    return admin.app();
+                }
+
                 return admin.initializeApp({
                     credential: admin.credential.cert(serviceAccount),
                     projectId: 'marketos-9b845',

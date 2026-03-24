@@ -59,6 +59,9 @@ exports.FirebaseModule = FirebaseModule = __decorate([
                     else {
                         serviceAccount = require('../../firebase-adminsdk.json');
                     }
+                    if (admin.apps.length) {
+                        return admin.app();
+                    }
                     return admin.initializeApp({
                         credential: admin.credential.cert(serviceAccount),
                         projectId: 'marketos-9b845',

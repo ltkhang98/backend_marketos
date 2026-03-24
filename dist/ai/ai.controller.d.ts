@@ -19,6 +19,24 @@ export declare class AiController {
     }, req: any): Promise<{
         url: string;
     }>;
+    generateKocProduct(body: {
+        kocId: string;
+        productImage: string;
+        prompt: string;
+        modelImage?: string;
+        bgImage?: string;
+    }, req: any): Promise<{
+        urls: string[];
+    }>;
+    generateKocVisual(body: {
+        kocId: string;
+        angle: string;
+        outfit: string;
+        hairColor: string;
+        action: string;
+    }, req: any): Promise<{
+        url: string | null;
+    }>;
     generateSmartBanner(body: any, req: any): Promise<{
         url: string;
     }>;
@@ -83,6 +101,7 @@ export declare class AiController {
         videoUrl: string;
     }>;
     streamDubbedVideo(jobId: string, req: any, res: Response): Promise<void>;
+    downloadDubbedVideo(jobId: string, res: Response): Promise<void>;
     videoDubbing(file: any, targetVoice: string, targetLang: string, bgVolume: string, dubVolume: string, showSubtitles: string, subColor: string, subFontSize: string, subBgColor: string, subVerticalPos: string, req: any): Promise<any>;
     getJobStatus(jobId: string): Promise<{
         id: string | undefined;
@@ -90,5 +109,43 @@ export declare class AiController {
         progress: any;
         result: any;
         reason: string;
+    } | {
+        id: string;
+        state: string;
+        progress: number;
+        reason: string;
+    }>;
+    removeBackground(body: {
+        imageUrl: string;
+    }, req: any): Promise<any>;
+    enhanceImage(body: {
+        imageUrl: string;
+    }, req: any): Promise<any>;
+    generateVisualClone(body: any, req: any): Promise<any>;
+    generateKolVideo(body: {
+        imageUrl: string;
+        videoUrl: string;
+    }, req: any): Promise<{
+        jobId: string | undefined;
+        message: string;
+    }>;
+    getAiKocs(req: any): Promise<{
+        id: string;
+    }[]>;
+    createAiKoc(body: {
+        name: string;
+        imageUrl: string;
+        tags?: string[];
+    }, req: any): Promise<{
+        userId: string;
+        createdAt: FirebaseFirestore.FieldValue;
+        updatedAt: FirebaseFirestore.FieldValue;
+        name: string;
+        imageUrl: string;
+        tags?: string[];
+        id: string;
+    }>;
+    deleteAiKoc(id: string, req: any): Promise<{
+        success: boolean;
     }>;
 }

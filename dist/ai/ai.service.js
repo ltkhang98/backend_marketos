@@ -64,6 +64,7 @@ const uuid_1 = require("uuid");
 const ffmpeg = require('fluent-ffmpeg');
 const server_1 = require("@google/generative-ai/server");
 const facebook_service_1 = require("../facebook/facebook.service");
+const replicate_1 = __importDefault(require("replicate"));
 let AiService = AiService_1 = class AiService {
     configService;
     firebaseAdmin;
@@ -79,6 +80,8 @@ let AiService = AiService_1 = class AiService {
     currentFptKey;
     currentScrapingBeeKey;
     currentRapidApiKey;
+    currentReplicateKey;
+    replicate;
     CREDIT_COSTS = {
         SOCIAL_CONTENT: 200,
         MARKETING_PLAN: 300,
@@ -107,7 +110,9 @@ let AiService = AiService_1 = class AiService {
         AUTOMATION_MARKET_RESEARCH: 500,
         AUTOMATION_PRODUCT_VIDEO: 500,
         AUTOMATION_FANPAGE_POSTING: 500,
-        VIDEO_DUBBING_PER_MIN: 2000
+        VIDEO_DUBBING_PER_MIN: 2000,
+        KOL_VIDEO: 500,
+        VISUAL_CLONE: 500
     };
     constructor(configService, firebaseAdmin, facebookService, videoQueue) {
         this.configService = configService;
@@ -120,12 +125,17 @@ let AiService = AiService_1 = class AiService {
     initializeModels() {
         const geminiKey = this.configService.get('GEMINI_API_KEY')?.trim();
         const fptKey = this.configService.get('FPT_AI_API_KEY')?.trim();
+        const replicateKey = this.configService.get('REPLICATE_API_TOKEN')?.trim();
         if (geminiKey) {
             this.currentGeminiKey = geminiKey;
             this.genAI = new generative_ai_1.GoogleGenerativeAI(geminiKey);
             this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
         }
         this.currentFptKey = fptKey;
+        if (replicateKey) {
+            this.currentReplicateKey = replicateKey;
+            this.replicate = new replicate_1.default({ auth: replicateKey });
+        }
     }
     listenToApiKeys() {
         try {
@@ -152,6 +162,13 @@ let AiService = AiService_1 = class AiService {
                     const newRapidApiKey = data?.rapidapi?.trim();
                     if (newRapidApiKey) {
                         this.currentRapidApiKey = newRapidApiKey;
+                    }
+                    const newReplicateKey = data?.replicate?.trim();
+                    if (newReplicateKey && newReplicateKey !== this.currentReplicateKey) {
+                        this.currentReplicateKey = newReplicateKey;
+                        this.replicate = new replicate_1.default({
+                            auth: newReplicateKey,
+                        });
                     }
                 }
             });
@@ -185,7 +202,7 @@ let AiService = AiService_1 = class AiService {
     async getJobStatus(jobId) {
         const job = await this.videoQueue.getJob(jobId);
         if (!job) {
-            throw new common_1.BadRequestException('Không tìm thấy Job ID');
+            throw new common_1.BadRequestException(`Không tìm thấy Job với ID: ${jobId}`);
         }
         const state = await job.getState();
         const progress = typeof job.progress === 'function' ? await job.progress() : job.progress;
@@ -235,6 +252,18 @@ let AiService = AiService_1 = class AiService {
                 }
                 transaction.update(userRef, {
                     tokens: admin.firestore.FieldValue.increment(-cost),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+                const trxRef = db.collection('transactions').doc();
+                transaction.set(trxRef, {
+                    uid: userId,
+                    userEmail: userData?.email || '',
+                    userName: userData?.name || userData?.displayName || 'Người dùng',
+                    type: 'usage',
+                    feature: featureName,
+                    tokens: cost,
+                    status: 'success',
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
                 });
                 return true;
@@ -1390,8 +1419,8 @@ let AiService = AiService_1 = class AiService {
             }
             console.log('--- Smart Banner Enhanced Prompt:', finalPrompt);
             const googleModels = [
-                "gemini-3.1-flash-image-preview",
                 "gemini-2.5-flash-image",
+                "gemini-3.1-flash-image-preview",
                 "gemini-3-pro-image-preview"
             ];
             let lastErrorMessage = "";
@@ -4127,6 +4156,400 @@ let AiService = AiService_1 = class AiService {
         const s = Math.floor(seconds % 60);
         const ms = Math.floor((seconds % 1) * 1000);
         return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+    }
+    async generateKolVideo(imageUrl, videoUrl, userId) {
+        if (!this.replicate) {
+            throw new common_1.BadRequestException('Tính năng này chưa được cấu hình API Key. Vui lòng thêm Replicate API Key trong cài đặt Admin.');
+        }
+        await this.deductCredits(userId, this.CREDIT_COSTS.KOL_VIDEO, 'Video KOL (DreamActor)');
+        const job = await this.videoQueue.add('generate-kol-video', {
+            type: 'kol-video',
+            data: {
+                imageUrl,
+                templateVideoUrl: videoUrl,
+                userId
+            }
+        });
+        return { jobId: job.id, message: 'Đã đưa yêu cầu tạo video vào hàng đợi thành công.' };
+    }
+    async processKolVideoJob(job) {
+        if (!this.replicate) {
+            throw new Error('Replicate API Key is missing!');
+        }
+        const { imageUrl, templateVideoUrl, userId } = job.data.data;
+        await job.updateProgress(10);
+        try {
+            const replicateInput = {
+                image: imageUrl.trim(),
+                video: templateVideoUrl.trim(),
+                image_url: imageUrl.trim(),
+                video_url: templateVideoUrl.trim(),
+                cut_first_second: true
+            };
+            this.logger.log(`[Replicate] Explicitly creating prediction for DreamActor M2.0...`);
+            this.logger.log(`[Replicate] Input Data: ${JSON.stringify(replicateInput)}`);
+            await job.updateProgress(30);
+            const prediction = await this.replicate.predictions.create({
+                version: "b23bf8e6d5f31dd67ad219fac057fd43d3ac38fc58343025ab557be74a9450ca",
+                input: replicateInput
+            });
+            const result = await this.replicate.wait(prediction);
+            const output = result.output;
+            await job.updateProgress(90);
+            if (!output || typeof output !== 'string') {
+                throw new Error('Không nhận được kết quả hợp lệ từ AI Server.');
+            }
+            const db = this.firebaseAdmin.firestore();
+            await db.collection('kol_videos_history').add({
+                userId,
+                imageUrl,
+                templateVideoUrl,
+                resultVideoUrl: output,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            await job.updateProgress(100);
+            return {
+                videoUrl: output
+            };
+        }
+        catch (error) {
+            this.logger.error(`Error processing KOL Video Job: ${error.message}`);
+            throw new Error(`Replicate failed: ${error.message}`);
+        }
+    }
+    async downloadDubbedVideo(jobId) {
+        throw new Error('Method not implemented.');
+    }
+    async removeBackground(imageUrl, userId) {
+        throw new Error('Method not implemented.');
+    }
+    async enhanceImage(imageUrl, userId) {
+        throw new Error('Method not implemented.');
+    }
+    async generateVisualClone(modelImage, templatePrompt, userId, templateImage, count = 1, fidelity = 90, creativity = 50) {
+        if (!this.genAI) {
+            throw new common_1.BadRequestException('Gemini API Key chưa được cấu hình.');
+        }
+        await this.deductCredits(userId, this.CREDIT_COSTS.VISUAL_CLONE, 'Sáng tạo ảnh Photo Studio (Gemini)');
+        try {
+            console.log(`--- [Photo Studio] Generating Visual Clone with Gemini for user: ${userId} ---`);
+            const modelBase64 = await this.resolveBase64Image(modelImage);
+            const templateBase64 = templateImage ? await this.resolveBase64Image(templateImage) : null;
+            if (!modelBase64) {
+                throw new common_1.BadRequestException('Không thể xử lý ảnh khuôn mặt đầu vào.');
+            }
+            const fidelityInstruction = fidelity > 85 ?
+                "CRITICAL: The face MUST be 100% identical to the source image. DO NOT modify features." :
+                "Maintain strong face resemblance to the source image.";
+            const creativityInstruction = creativity > 50 ?
+                "Feel free to add artistic lighting, cinematic bokeh, and atmospheric details." :
+                "Keep the environment and lighting realistic and clean.";
+            let finalPrompt = "";
+            const parts = [];
+            if (templateBase64) {
+                finalPrompt = `TASK: IMAGE-TO-IMAGE IDENTITY TRANSFORMATION. 
+                    - SOURCE IDENTITY: The person shown in the 'source_identity' image.
+                    - TARGET CONTEXT: The scene and person shown in the 'target_context' image.
+                    - ACTION: COMPLETELY REPLACE the head/face/body of the person in 'target_context' with the person from 'source_identity'.
+                    - REQUIREMENTS: Keep the EXACT pose, clothing, and background from 'target_context'. 
+                    - IDENTICAL FACE: ${fidelityInstruction}
+                    - STYLE: ${creativityInstruction}
+                    - OUTPUT: High-quality, professional photography, 8k resolution.`;
+                parts.push({ inlineData: { data: templateBase64, mimeType: "image/jpeg" } });
+                parts.push({ text: "target_context image" });
+                parts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
+                parts.push({ text: "source_identity image" });
+            }
+            else {
+                const cleanPrompt = templatePrompt || "Professional studio portrait, elegant lighting";
+                finalPrompt = `TASK: NEW IMAGE PRODUCTION WITH IDENTITY.
+                    - ACTOR: The person from the 'source_identity' image.
+                    - SCENE: ${cleanPrompt}.
+                    - INSTRUCTIONS: Generate a high-end, realistic photograph of this PERSON in the specified scene.
+                    - IDENTICAL FACE: ${fidelityInstruction}
+                    - STYLE: ${creativityInstruction}
+                    - OUTPUT: Professional photography, 8k, cinematic lighting, sharp details.`;
+                parts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
+                parts.push({ text: "source_identity image" });
+            }
+            parts.push({ text: finalPrompt });
+            const googleModels = [
+                "gemini-2.5-flash-image",
+                "gemini-2.0-flash-exp",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash"
+            ];
+            let finalUrls = [];
+            const resultsCount = Math.min(count, 8);
+            for (const modelName of googleModels) {
+                if (finalUrls.length > 0)
+                    break;
+                console.log(`--- Calling Gemini (${modelName}) to generate ${resultsCount} variants ---`);
+                const currentModel = this.genAI.getGenerativeModel({ model: modelName });
+                const generationTasks = [];
+                for (let i = 0; i < resultsCount; i++) {
+                    generationTasks.push(this.callSingleGeminiImageGen(currentModel, parts, userId));
+                }
+                const results = await Promise.all(generationTasks);
+                finalUrls = results.filter(url => url !== null);
+            }
+            if (finalUrls.length === 0) {
+                throw new Error("Không thể tạo ảnh bằng Gemini (Model không phản hồi / Quotas).");
+            }
+            const db = this.firebaseAdmin.firestore();
+            await db.collection('visual_clone_history').add({
+                userId,
+                modelImage,
+                templatePrompt,
+                templateImage: templateImage || null,
+                urls: finalUrls,
+                meta: { fidelity, creativity, method: templateImage ? 'swap' : 'generate', engine: 'gemini' },
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            return { urls: finalUrls };
+        }
+        catch (error) {
+            console.error('[VisualClone] Gemini Error:', error.message);
+            throw new common_1.InternalServerErrorException('Lỗi hệ thống khi thiết kế ảnh với Gemini: ' + error.message);
+        }
+    }
+    async getAiKocs(userId) {
+        const db = this.firebaseAdmin.firestore();
+        try {
+            const snapshot = await db.collection('ai_kocs')
+                .where('userId', '==', userId)
+                .orderBy('createdAt', 'desc')
+                .get();
+            return snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+        }
+        catch (error) {
+            this.logger.error(`Error fetching KOCs for user ${userId}: ${error.message}`);
+            if (error.message.includes('requires an index') || error.code === 9) {
+                this.logger.warn('Falling back to un-ordered results due to missing index.');
+                const snapshot = await db.collection('ai_kocs')
+                    .where('userId', '==', userId)
+                    .get();
+                const docs = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                return docs.sort((a, b) => {
+                    const timeA = a.createdAt?.seconds || 0;
+                    const timeB = b.createdAt?.seconds || 0;
+                    return timeB - timeA;
+                });
+            }
+            throw new common_1.InternalServerErrorException('Không thể tải danh sách KOC: ' + error.message);
+        }
+    }
+    async createAiKoc(data, userId) {
+        const db = this.firebaseAdmin.firestore();
+        const kocDoc = {
+            ...data,
+            userId,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+        const docRef = await db.collection('ai_kocs').add(kocDoc);
+        return { id: docRef.id, ...kocDoc };
+    }
+    async deleteAiKoc(id, userId) {
+        const db = this.firebaseAdmin.firestore();
+        const docRef = db.collection('ai_kocs').doc(id);
+        const doc = await docRef.get();
+        if (!doc.exists) {
+            throw new common_1.BadRequestException('Không tìm thấy KOC.');
+        }
+        if (doc.data()?.userId !== userId) {
+            throw new common_1.BadRequestException('Bạn không có quyền xóa KOC này.');
+        }
+        await docRef.delete();
+        return { success: true };
+    }
+    async generateKocProductImage(kocId, productImage, prompt, userId, modelImageOverride, bgImage) {
+        if (!this.genAI) {
+            throw new common_1.BadRequestException('Gemini API Key chưa được cấu hình.');
+        }
+        const db = this.firebaseAdmin.firestore();
+        const kocDoc = await db.collection('ai_kocs').doc(kocId).get();
+        if (!kocDoc.exists) {
+            throw new common_1.BadRequestException('Không tìm thấy KOC.');
+        }
+        const kocData = kocDoc.data();
+        const modelImage = modelImageOverride || kocData?.imageUrl;
+        await this.deductCredits(userId, this.CREDIT_COSTS.VISUAL_CLONE, 'Tạo ảnh KOC + Sản phẩm');
+        try {
+            console.log(`--- Creating KOC + Product Images ---`);
+            const replacementPrompt = `CRITICAL PHOTO-EDITING MISSION: 
+                  - YOUR GOAL: REPLACE the human model in the BACKGROUND image with THE KOC (Source Identity) provided.
+                  - IDENTITY SOURCE: Use the EXACT face, features, body shape, HAIR STYLE, and HAIR COLOR (blonde/grey) from the KOC image.
+                  - SPATIAL GUIDE: Use the EXACT pose and position of the person in the BACKGROUND.
+                  - PRODUCT: Dress the KOC in the PRODUCT provided.
+                  - FINAL MANDATORY CHECK: KẾT QUẢ PHẢI CÓ ĐẦY ĐỦ KIỂU TÓC, MÀU TÓC, GƯƠNG MẶT VÀ HÌNH DÁNG CỦA KOC. KHÔNG ĐƯỢC GIỮ LẠI MẶT CŨ. KHÔNG CÓ NGOẠI LỆ.`;
+            const classicPrompt = `Act as a master digital artist. Create a high-end commercial advertisement combining THE KOC and THE PRODUCT.
+                  1. IDENTITY: Preserve the KOC's face and features 100%.
+                  2. PRODUCT: Preserve the product details 100%.
+                  3. SCENE: Create a realistic background based on: ${prompt}.
+                  4. STYLE: Photorealistic studio lighting, cinematic 8k.`;
+            const finalPrompt = bgImage ? replacementPrompt : classicPrompt;
+            const prepareImageData = (img) => {
+                if (img.includes('base64,')) {
+                    return { inlineData: { data: img.split('base64,')[1], mimeType: "image/jpeg" } };
+                }
+                return img;
+            };
+            const modelBase64 = await this.resolveBase64Image(modelImage);
+            const productBase64 = await this.resolveBase64Image(productImage);
+            const bgBase64 = bgImage ? await this.resolveBase64Image(bgImage) : null;
+            if (!modelBase64 || !productBase64) {
+                throw new common_1.BadRequestException('Không thể xử lý hình ảnh đầu vào. Vui lòng kiểm tra định dạng ảnh (KOC hoặc Sản phẩm).');
+            }
+            const parts = [];
+            if (bgBase64)
+                parts.push({ inlineData: { data: bgBase64, mimeType: "image/jpeg" } });
+            parts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
+            parts.push({ inlineData: { data: productBase64, mimeType: "image/jpeg" } });
+            parts.push({ text: finalPrompt });
+            if (!bgImage && prompt)
+                parts.push({ text: `Additional Scene details: ${prompt}` });
+            const googleModels = [
+                "gemini-2.5-flash-image",
+                "gemini-2.0-flash-exp",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash"
+            ];
+            let finalUrls = [];
+            for (const modelName of googleModels) {
+                if (finalUrls.length > 0)
+                    break;
+                console.log(`--- Create KOC+Product with model: ${modelName} ---`);
+                const currentModel = this.genAI.getGenerativeModel({ model: modelName });
+                const results = await Promise.all([
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                ]);
+                finalUrls = results.filter(url => url !== null);
+            }
+            await db.collection('koc_product_history').add({
+                userId,
+                kocId,
+                modelImage,
+                productImage,
+                prompt,
+                urls: finalUrls,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            return { urls: finalUrls };
+        }
+        catch (error) {
+            console.error('[KocProduct] Error:', error.message);
+            throw new common_1.InternalServerErrorException('Lỗi khi tạo ảnh KOC + Sản phẩm: ' + error.message);
+        }
+    }
+    async callSingleGeminiImageGen(model, parts, userId) {
+        try {
+            const result = await model.generateContent({
+                contents: [{ role: 'user', parts }]
+            });
+            const candidates = result.response.candidates;
+            if (candidates && candidates.length > 0 && candidates[0].content.parts.length > 0) {
+                const imagePart = candidates[0].content.parts.find((part) => part.inlineData);
+                if (imagePart && imagePart.inlineData) {
+                    const base64Image = imagePart.inlineData.data;
+                    const mimeType = imagePart.inlineData.mimeType || 'image/jpeg';
+                    try {
+                        const storageUrl = await this.uploadBase64ToStorage(base64Image, mimeType, userId);
+                        return storageUrl;
+                    }
+                    catch (storageErr) {
+                        console.warn("KOC+Product Storage upload failed:", storageErr.message);
+                        return `data:${mimeType};base64,${base64Image}`;
+                    }
+                }
+                else {
+                    const text = result.response.text();
+                    const urlMatch = text.match(/https?:\/\/[^\s"']+/);
+                    return urlMatch ? urlMatch[0] : null;
+                }
+            }
+            return null;
+        }
+        catch (e) {
+            console.error('KOC+Product Gemini Call error:', e.message);
+            return null;
+        }
+    }
+    async generateKocVisual(data, userId) {
+        if (!this.genAI)
+            throw new common_1.BadRequestException('Gemini API Key chưa được cấu hình.');
+        const db = this.firebaseAdmin.firestore();
+        const kocDoc = await db.collection('ai_kocs').doc(data.kocId).get();
+        if (!kocDoc.exists)
+            throw new common_1.BadRequestException('Không tìm thấy nhân vật KOC.');
+        const kocData = kocDoc.data();
+        const modelImage = kocData?.imageUrl;
+        await this.deductCredits(userId, 500, `Kiến tạo diện mạo KOC (${data.kocId})`);
+        try {
+            console.log(`--- Generating KOC Visual Transformation: ${data.kocId} ---`);
+            const finalPrompt = `Act as a master photographer and digital artist. 
+            Your task is to generate a NEW high-quality image of the PERSON (KOC) provided while maintaining their EXACT face, identity, and features.
+            
+            SCENE CONFIGURATION:
+            - Camera Angle: ${data.angle}
+            - Outfit / Clothing: ${data.outfit}
+            - Hair Style & Color: ${data.hairColor}
+            - Action / Context: ${data.action || 'Sáng tạo bối cảnh sang trọng, nghệ thuật'}
+            
+            REQUIREMENTS:
+            - The face of the KOC MUST remain 100% identical to the input image.
+            - Ensure the new pose and clothing look natural and high-end.
+            - Photorealistic style, 8k, cinematic lighting, professional composition.
+            - Background should complement the requested outfit and action.
+            - Output: Only return the creative masterpiece image.`;
+            const modelBase64 = await this.resolveBase64Image(modelImage);
+            if (!modelBase64)
+                throw new common_1.BadRequestException('Không thể xử lý ảnh gốc của KOC.');
+            const parts = [
+                { text: finalPrompt },
+                { inlineData: { data: modelBase64, mimeType: "image/jpeg" } }
+            ];
+            const googleModels = ["gemini-2.5-flash-image", "gemini-2.0-flash-exp", "gemini-1.5-flash"];
+            let finalUrl = null;
+            for (const modelName of googleModels) {
+                if (finalUrl)
+                    break;
+                const model = this.genAI.getGenerativeModel({ model: modelName });
+                finalUrl = await this.callSingleGeminiImageGen(model, parts, userId);
+            }
+            if (finalUrl) {
+                await db.collection('koc_visual_history').add({
+                    userId,
+                    kocId: data.kocId,
+                    params: data,
+                    url: finalUrl,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+                await db.collection('ai_kocs').doc(data.kocId).update({
+                    album: admin.firestore.FieldValue.arrayUnion(finalUrl),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+            }
+            return { url: finalUrl };
+        }
+        catch (error) {
+            console.error('[KocVisual] Error:', error.message);
+            throw new common_1.InternalServerErrorException('Lỗi khi kiến tạo bối cảnh KOC: ' + error.message);
+        }
+    }
+    async processReburnJob(job) {
+        throw new Error('Method not implemented.');
     }
 };
 exports.AiService = AiService;

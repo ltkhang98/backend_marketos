@@ -32,6 +32,12 @@ let AiProcessor = AiProcessor_1 = class AiProcessor extends bullmq_1.WorkerHost 
             else if (type === 'video-dubbing') {
                 return await this.aiService.processDubbingJob(job);
             }
+            else if (type === 'kol-video') {
+                return await this.aiService.processKolVideoJob(job);
+            }
+            else if (type === 're-burn') {
+                return await this.aiService.processReburnJob(job);
+            }
         }
         catch (error) {
             this.logger.error(`Lỗi khi xử lý Job ${job.id}: ${error.message}`);

@@ -11,7 +11,8 @@ export class FacebookController {
             pageAccessToken: string;
             pageId: string;
             message: string;
-            imageUrl?: string
+            imageUrl?: string;
+            imageUrls?: string[];
         },
     ) {
         return this.facebookService.postToPage(
@@ -19,6 +20,7 @@ export class FacebookController {
             body.pageId,
             body.message,
             body.imageUrl,
+            body.imageUrls,
         );
     }
 

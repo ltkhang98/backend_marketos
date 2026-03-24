@@ -1,5 +1,5 @@
 import { OnModuleInit } from '@nestjs/common';
-import { Queue } from 'bullmq';
+import { Queue, Job } from 'bullmq';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import * as admin from 'firebase-admin';
@@ -20,6 +20,8 @@ export declare class AiService implements OnModuleInit {
     private currentFptKey;
     private currentScrapingBeeKey;
     private currentRapidApiKey;
+    private currentReplicateKey;
+    private replicate;
     private readonly CREDIT_COSTS;
     constructor(configService: ConfigService, firebaseAdmin: admin.app.App, facebookService: FacebookService, videoQueue: Queue);
     private initializeModels;
@@ -161,4 +163,48 @@ export declare class AiService implements OnModuleInit {
     private splitLongSegments;
     private formatSrt;
     private secondsToSrtTime;
+    generateKolVideo(imageUrl: string, videoUrl: string, userId: string): Promise<{
+        jobId: string | undefined;
+        message: string;
+    }>;
+    processKolVideoJob(job: Job<any, any, string>): Promise<{
+        videoUrl: string;
+    }>;
+    downloadDubbedVideo(jobId: string): Promise<any>;
+    removeBackground(imageUrl: string, userId: string): Promise<any>;
+    enhanceImage(imageUrl: string, userId: string): Promise<any>;
+    generateVisualClone(modelImage: string, templatePrompt: string, userId: string, templateImage?: string, count?: number, fidelity?: number, creativity?: number): Promise<any>;
+    getAiKocs(userId: string): Promise<{
+        id: string;
+    }[]>;
+    createAiKoc(data: {
+        name: string;
+        imageUrl: string;
+        tags?: string[];
+    }, userId: string): Promise<{
+        userId: string;
+        createdAt: admin.firestore.FieldValue;
+        updatedAt: admin.firestore.FieldValue;
+        name: string;
+        imageUrl: string;
+        tags?: string[];
+        id: string;
+    }>;
+    deleteAiKoc(id: string, userId: string): Promise<{
+        success: boolean;
+    }>;
+    generateKocProductImage(kocId: string, productImage: string, prompt: string, userId: string, modelImageOverride?: string, bgImage?: string): Promise<{
+        urls: string[];
+    }>;
+    private callSingleGeminiImageGen;
+    generateKocVisual(data: {
+        kocId: string;
+        angle: string;
+        outfit: string;
+        hairColor: string;
+        action: string;
+    }, userId: string): Promise<{
+        url: string | null;
+    }>;
+    processReburnJob(job: any): Promise<any>;
 }

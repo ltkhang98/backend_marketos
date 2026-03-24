@@ -5,5 +5,5 @@ export declare class FacebookService {
     constructor(configService: ConfigService);
     exchangeToLongLivedToken(shortLivedToken: string): Promise<any>;
     getUserPages(userAccessToken: string): Promise<any>;
-    postToPage(pageAccessToken: string, pageId: string, message: string, imageUrl?: string): Promise<any>;
+    postToPage(pageAccessToken: string, pageId: string, message: string, imageUrl?: string, imageUrls?: string[]): Promise<any>;
 }

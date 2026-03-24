@@ -22,7 +22,7 @@ exports.AuthModule = AuthModule = __decorate([
             users_module_1.UsersModule,
             passport_1.PassportModule,
             jwt_1.JwtModule.register({
-                secret: 'SECRET_KEY',
+                secret: process.env.JWT_SECRET || 'fallback_secret',
                 signOptions: { expiresIn: '1d' },
             }),
         ],

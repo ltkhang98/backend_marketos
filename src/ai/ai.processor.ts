@@ -26,6 +26,10 @@ export class AiProcessor extends WorkerHost {
                 return await this.aiService.processAutoSubJob(job);
             } else if (type === 'video-dubbing') {
                 return await this.aiService.processDubbingJob(job);
+            } else if (type === 'kol-video') {
+                return await this.aiService.processKolVideoJob(job);
+            } else if (type === 're-burn') {
+                return await this.aiService.processReburnJob(job);
             }
         } catch (error) {
             this.logger.error(`Lỗi khi xử lý Job ${job.id}: ${error.message}`);

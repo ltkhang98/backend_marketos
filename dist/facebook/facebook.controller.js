@@ -21,7 +21,7 @@ let FacebookController = class FacebookController {
         this.facebookService = facebookService;
     }
     async postToFacebook(body) {
-        return this.facebookService.postToPage(body.pageAccessToken, body.pageId, body.message, body.imageUrl);
+        return this.facebookService.postToPage(body.pageAccessToken, body.pageId, body.message, body.imageUrl, body.imageUrls);
     }
     async exchangeToken(body) {
         return this.facebookService.exchangeToLongLivedToken(body.shortLivedToken);

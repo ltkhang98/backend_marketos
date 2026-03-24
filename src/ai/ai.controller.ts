@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Get, Query, Res, Req, InternalServerErrorException, UseInterceptors, UploadedFile, Param } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Get, Query, Res, Req, InternalServerErrorException, UseInterceptors, UploadedFile, Param, Delete } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AiService } from './ai.service';
 import { FirebaseGuard } from '../auth/firebase.guard';
@@ -55,6 +55,18 @@ export class AiController {
     @Post('generate-mockup')
     async generateMockup(@Body() body: { prompt: string; productImage?: string; logoImage?: string; modelImage?: string; aspectRatio?: string }, @Req() req: any) {
         return this.aiService.generateImageMockup(body.prompt, body.productImage, body.logoImage, body.modelImage, body.aspectRatio, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('generate-koc-product')
+    async generateKocProduct(@Body() body: { kocId: string; productImage: string; prompt: string; modelImage?: string; bgImage?: string }, @Req() req: any) {
+        return this.aiService.generateKocProductImage(body.kocId, body.productImage, body.prompt, req.user.uid, body.modelImage, body.bgImage);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('generate-koc-visual')
+    async generateKocVisual(@Body() body: { kocId: string; angle: string; outfit: string; hairColor: string; action: string }, @Req() req: any) {
+        return this.aiService.generateKocVisual(body, req.user.uid);
     }
 
     @UseGuards(FirebaseGuard)
@@ -318,6 +330,21 @@ export class AiController {
         }
     }
 
+    @Get('download-dub-video/:jobId')
+    async downloadDubbedVideo(@Param('jobId') jobId: string, @Res() res: Response) {
+        try {
+            const { stream, size } = await this.aiService.downloadDubbedVideo(jobId);
+            res.set({
+                'Content-Type': 'video/mp4',
+                'Content-Length': size.toString(),
+                'Content-Disposition': 'attachment; filename="dubbed-video-' + jobId + '.mp4"',
+            });
+            stream.pipe(res);
+        } catch (error) {
+            res.status(500).send('Lỗi khi tải video lồng tiếng: ' + error.message);
+        }
+    }
+
     @UseGuards(FirebaseGuard)
     @Post('video-dubbing')
     @UseInterceptors(FileInterceptor('video'))
@@ -357,6 +384,61 @@ export class AiController {
     @UseGuards(FirebaseGuard)
     @Get('job-status/:jobId')
     async getJobStatus(@Param('jobId') jobId: string) {
-        return this.aiService.getJobStatus(jobId);
+        try {
+            return await this.aiService.getJobStatus(jobId);
+        } catch (error: any) {
+            console.error(`[AiController] Lỗi getJobStatus(jobId=${jobId}):`, error);
+            return {
+                id: jobId,
+                state: 'failed',
+                progress: 0,
+                reason: 'Internal Server Error: ' + (error.message || String(error))
+            };
+        }
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('remove-bg')
+    async removeBackground(@Body() body: { imageUrl: string }, @Req() req: any) {
+        return this.aiService.removeBackground(body.imageUrl, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('enhance-image')
+    async enhanceImage(@Body() body: { imageUrl: string }, @Req() req: any) {
+        return this.aiService.enhanceImage(body.imageUrl, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('visual-clone')
+    async generateVisualClone(@Body() body: any, @Req() req: any) {
+        return this.aiService.generateVisualClone(body.modelImage, body.templatePrompt, req.user.uid, body.templateImage, body.count, body.fidelity, body.creativity);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('generate-kol-video')
+    async generateKolVideo(@Body() body: { imageUrl: string; videoUrl: string; }, @Req() req: any) {
+        if (!body.imageUrl || !body.videoUrl) {
+            throw new Error('Bắt buộc phải có ảnh nhân vật và video mẫu.');
+        }
+        return this.aiService.generateKolVideo(body.imageUrl, body.videoUrl, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Get('koc')
+    async getAiKocs(@Req() req: any) {
+        return this.aiService.getAiKocs(req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Post('koc')
+    async createAiKoc(@Body() body: { name: string, imageUrl: string, tags?: string[] }, @Req() req: any) {
+        return this.aiService.createAiKoc(body, req.user.uid);
+    }
+
+    @UseGuards(FirebaseGuard)
+    @Delete('koc/:id')
+    async deleteAiKoc(@Param('id') id: string, @Req() req: any) {
+        return this.aiService.deleteAiKoc(id, req.user.uid);
     }
 }

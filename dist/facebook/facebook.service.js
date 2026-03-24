@@ -82,7 +82,7 @@ let FacebookService = FacebookService_1 = class FacebookService {
             throw new common_1.HttpException(`Lỗi kết nối Facebook: ${error.response?.data?.error?.message || error.message}`, common_1.HttpStatus.BAD_REQUEST);
         }
     }
-    async postToPage(pageAccessToken, pageId, message, imageUrl) {
+    async postToPage(pageAccessToken, pageId, message, imageUrl, imageUrls) {
         try {
             if (!pageAccessToken) {
                 throw new Error('Mã truy cập Fanpage (Access Token) bị thiếu.');
@@ -95,7 +95,30 @@ let FacebookService = FacebookService_1 = class FacebookService {
                 'Authorization': `Bearer ${pageAccessToken}`,
                 'Content-Type': 'application/x-www-form-urlencoded'
             };
-            if (imageUrl && imageUrl.startsWith('http')) {
+            if (imageUrls && imageUrls.length > 0) {
+                if (imageUrls.length === 1) {
+                    const params = new URLSearchParams();
+                    params.append('url', imageUrls[0]);
+                    params.append('caption', message);
+                    params.append('published', 'true');
+                    response = await axios_1.default.post(`https://graph.facebook.com/v19.0/${cleanPageId}/photos`, params.toString(), { headers });
+                }
+                else {
+                    const mediaIds = [];
+                    for (const imgUrl of imageUrls) {
+                        const params = new URLSearchParams();
+                        params.append('url', imgUrl);
+                        params.append('published', 'false');
+                        const photoRes = await axios_1.default.post(`https://graph.facebook.com/v19.0/${cleanPageId}/photos`, params.toString(), { headers });
+                        mediaIds.push({ media_fbid: photoRes.data.id });
+                    }
+                    const feedParams = new URLSearchParams();
+                    feedParams.append('message', message);
+                    feedParams.append('attached_media', JSON.stringify(mediaIds));
+                    response = await axios_1.default.post(`https://graph.facebook.com/v19.0/${cleanPageId}/feed`, feedParams.toString(), { headers });
+                }
+            }
+            else if (imageUrl && imageUrl.startsWith('http')) {
                 const params = new URLSearchParams();
                 params.append('url', imageUrl);
                 params.append('caption', message);

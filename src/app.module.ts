@@ -15,6 +15,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { MailModule } from './mail/mail.module';
 import { StoreOrdersModule } from './store-orders/store-orders.module';
 import { FacebookModule } from './facebook/facebook.module';
+import { LoggerModule } from './common/logger/logger.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { FacebookModule } from './facebook/facebook.module';
     MailModule,
     StoreOrdersModule,
     FacebookModule,
+    LoggerModule,
   ],
   controllers: [AppController],
   providers: [AppService],
