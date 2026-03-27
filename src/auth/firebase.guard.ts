@@ -5,10 +5,10 @@ import * as admin from 'firebase-admin';
 export class FirebaseGuard implements CanActivate {
     async canActivate(context: ExecutionContext): Promise<boolean> {
         const request = context.switchToHttp().getRequest();
-        const token = request.headers.authorization?.split('Bearer ')[1];
+        const token = request.headers.authorization?.split('Bearer ')[1] || (request.query.token as string);
 
         if (!token) {
-            throw new UnauthorizedException('Không tìm thấy Token xác thực');
+            throw new UnauthorizedException('Không tìm thấy Token xác thực (Header hoặc Query)');
         }
 
         try {

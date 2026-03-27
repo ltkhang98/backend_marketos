@@ -10,6 +10,7 @@ export declare class UsersService {
             name: any;
             email: any;
             role: any;
+            plan: string;
             createdAt: admin.firestore.FieldValue;
             lastLogin: admin.firestore.FieldValue;
         };

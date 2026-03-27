@@ -10,6 +10,7 @@ export declare class UsersController {
             name: any;
             email: any;
             role: any;
+            plan: string;
             createdAt: FirebaseFirestore.FieldValue;
             lastLogin: FirebaseFirestore.FieldValue;
         };

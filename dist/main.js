@@ -101,6 +101,16 @@ async function bootstrap() {
     app.use((0, express_1.json)({ limit: '50mb' }));
     app.use((0, express_1.urlencoded)({ extended: true, limit: '50mb' }));
     app.use((0, express_1.text)({ type: ['text/html', 'text/plain'], limit: '50mb' }));
+    const express = require('express');
+    const path = require('path');
+    const fs = require('fs');
+    const uploadsDir = path.join(process.cwd(), 'uploads');
+    if (!fs.existsSync(uploadsDir)) {
+        fs.mkdirSync(uploadsDir, { recursive: true });
+        fs.mkdirSync(path.join(uploadsDir, 'avatars'), { recursive: true });
+        fs.mkdirSync(path.join(uploadsDir, 'ai_generated'), { recursive: true });
+    }
+    app.use('/uploads', express.static(uploadsDir));
     const firestoreLogger = app.get(firestore_logger_service_1.FirestoreLogger);
     app.useLogger(firestoreLogger);
     await app.listen(process.env.PORT ?? 3000);

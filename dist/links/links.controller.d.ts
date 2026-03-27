@@ -6,21 +6,20 @@ export declare class LinksController {
     shorten(body: {
         url: string;
         customAlias?: string;
-        userId: string;
-    }): Promise<{
+    }, req: any): Promise<{
         originalUrl: string;
         shortId: string;
         userId: string;
         createdAt: FirebaseFirestore.FieldValue;
         clicks: number;
     }>;
-    getUserLinks(userId: string): Promise<{
+    getUserLinks(req: any): Promise<{
         id: string;
     }[]>;
-    deleteLink(shortId: string, userId: string): Promise<{
+    deleteLink(shortId: string, req: any): Promise<{
         success: boolean;
     }>;
-    getAnalytics(userId: string, shortId?: string): Promise<{
+    getAnalytics(req: any, shortId?: string): Promise<{
         totalLinks: number;
         totalClicks: any;
         timelineData: {

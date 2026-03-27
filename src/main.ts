@@ -80,6 +80,22 @@ async function bootstrap() {
   app.use(urlencoded({ extended: true, limit: '50mb' }));
   app.use(text({ type: ['text/html', 'text/plain'], limit: '50mb' }));
 
+  // Phục vụ file tĩnh từ thư mục uploads
+  const express = require('express');
+  const path = require('path');
+  const fs = require('fs');
+  const uploadsDir = path.join(process.cwd(), 'uploads');
+  
+  // Tạo thư mục uploads nếu chưa có
+  if (!fs.existsSync(uploadsDir)) {
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    // Tạo thêm các thư mục con cần thiết
+    fs.mkdirSync(path.join(uploadsDir, 'avatars'), { recursive: true });
+    fs.mkdirSync(path.join(uploadsDir, 'ai_generated'), { recursive: true });
+  }
+  
+  app.use('/uploads', express.static(uploadsDir));
+
   // Sử dụng Firestore Logger cho NestJS
   const firestoreLogger = app.get(FirestoreLogger);
   app.useLogger(firestoreLogger);

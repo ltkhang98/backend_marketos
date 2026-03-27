@@ -62,6 +62,7 @@ let UsersService = class UsersService {
                 name,
                 email,
                 role: role || 'user',
+                plan: 'basic',
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 lastLogin: admin.firestore.FieldValue.serverTimestamp(),
             };

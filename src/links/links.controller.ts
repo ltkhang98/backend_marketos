@@ -1,4 +1,5 @@
 import { Controller, Post, Get, Body, Param, Req, UseGuards, Res, Delete, HttpStatus, Query } from '@nestjs/common';
+import { FirebaseGuard } from '../auth/firebase.guard';
 import { LinksService } from './links.service';
 import type { Response } from 'express';
 
@@ -7,23 +8,27 @@ export class LinksController {
     constructor(private readonly linksService: LinksService) { }
 
     @Post('shorten')
-    async shorten(@Body() body: { url: string, customAlias?: string, userId: string }) {
-        return this.linksService.createShortLink(body.url, body.userId, body.customAlias);
+    @UseGuards(FirebaseGuard)
+    async shorten(@Body() body: { url: string, customAlias?: string }, @Req() req: any) {
+        return this.linksService.createShortLink(body.url, req.user.uid, body.customAlias);
     }
 
-    @Get('user/:userId')
-    async getUserLinks(@Param('userId') userId: string) {
-        return this.linksService.getLinksByUser(userId);
+    @Get('user')
+    @UseGuards(FirebaseGuard)
+    async getUserLinks(@Req() req: any) {
+        return this.linksService.getLinksByUser(req.user.uid);
     }
 
-    @Delete(':shortId/:userId')
-    async deleteLink(@Param('shortId') shortId: string, @Param('userId') userId: string) {
-        return this.linksService.deleteLink(shortId, userId);
+    @Delete(':shortId')
+    @UseGuards(FirebaseGuard)
+    async deleteLink(@Param('shortId') shortId: string, @Req() req: any) {
+        return this.linksService.deleteLink(shortId, req.user.uid);
     }
 
-    @Get('analytics/:userId')
-    async getAnalytics(@Param('userId') userId: string, @Query('shortId') shortId?: string) {
-        return this.linksService.getAnalytics(userId, shortId);
+    @Get('analytics')
+    @UseGuards(FirebaseGuard)
+    async getAnalytics(@Req() req: any, @Query('shortId') shortId?: string) {
+        return this.linksService.getAnalytics(req.user.uid, shortId);
     }
 
     @Get('redirect/:shortId')

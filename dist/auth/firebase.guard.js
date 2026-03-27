@@ -45,9 +45,9 @@ const admin = __importStar(require("firebase-admin"));
 let FirebaseGuard = class FirebaseGuard {
     async canActivate(context) {
         const request = context.switchToHttp().getRequest();
-        const token = request.headers.authorization?.split('Bearer ')[1];
+        const token = request.headers.authorization?.split('Bearer ')[1] || request.query.token;
         if (!token) {
-            throw new common_1.UnauthorizedException('Không tìm thấy Token xác thực');
+            throw new common_1.UnauthorizedException('Không tìm thấy Token xác thực (Header hoặc Query)');
         }
         try {
             const decodedToken = await admin.auth().verifyIdToken(token);

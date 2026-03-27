@@ -14,23 +14,24 @@ var __param = (this && this.__param) || function (paramIndex, decorator) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LinksController = void 0;
 const common_1 = require("@nestjs/common");
+const firebase_guard_1 = require("../auth/firebase.guard");
 const links_service_1 = require("./links.service");
 let LinksController = class LinksController {
     linksService;
     constructor(linksService) {
         this.linksService = linksService;
     }
-    async shorten(body) {
-        return this.linksService.createShortLink(body.url, body.userId, body.customAlias);
+    async shorten(body, req) {
+        return this.linksService.createShortLink(body.url, req.user.uid, body.customAlias);
     }
-    async getUserLinks(userId) {
-        return this.linksService.getLinksByUser(userId);
+    async getUserLinks(req) {
+        return this.linksService.getLinksByUser(req.user.uid);
     }
-    async deleteLink(shortId, userId) {
-        return this.linksService.deleteLink(shortId, userId);
+    async deleteLink(shortId, req) {
+        return this.linksService.deleteLink(shortId, req.user.uid);
     }
-    async getAnalytics(userId, shortId) {
-        return this.linksService.getAnalytics(userId, shortId);
+    async getAnalytics(req, shortId) {
+        return this.linksService.getAnalytics(req.user.uid, shortId);
     }
     async redirect(shortId, res) {
         const originalUrl = await this.linksService.getOriginalUrl(shortId);
@@ -43,32 +44,37 @@ let LinksController = class LinksController {
 exports.LinksController = LinksController;
 __decorate([
     (0, common_1.Post)('shorten'),
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
     __param(0, (0, common_1.Body)()),
+    __param(1, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [Object]),
+    __metadata("design:paramtypes", [Object, Object]),
     __metadata("design:returntype", Promise)
 ], LinksController.prototype, "shorten", null);
 __decorate([
-    (0, common_1.Get)('user/:userId'),
-    __param(0, (0, common_1.Param)('userId')),
+    (0, common_1.Get)('user'),
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    __param(0, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String]),
+    __metadata("design:paramtypes", [Object]),
     __metadata("design:returntype", Promise)
 ], LinksController.prototype, "getUserLinks", null);
 __decorate([
-    (0, common_1.Delete)(':shortId/:userId'),
+    (0, common_1.Delete)(':shortId'),
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
     __param(0, (0, common_1.Param)('shortId')),
-    __param(1, (0, common_1.Param)('userId')),
+    __param(1, (0, common_1.Req)()),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", Promise)
 ], LinksController.prototype, "deleteLink", null);
 __decorate([
-    (0, common_1.Get)('analytics/:userId'),
-    __param(0, (0, common_1.Param)('userId')),
+    (0, common_1.Get)('analytics'),
+    (0, common_1.UseGuards)(firebase_guard_1.FirebaseGuard),
+    __param(0, (0, common_1.Req)()),
     __param(1, (0, common_1.Query)('shortId')),
     __metadata("design:type", Function),
-    __metadata("design:paramtypes", [String, String]),
+    __metadata("design:paramtypes", [Object, String]),
     __metadata("design:returntype", Promise)
 ], LinksController.prototype, "getAnalytics", null);
 __decorate([

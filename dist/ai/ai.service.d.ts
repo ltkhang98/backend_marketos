@@ -1,210 +1,93 @@
-import { OnModuleInit } from '@nestjs/common';
-import { Queue, Job } from 'bullmq';
-import { ConfigService } from '@nestjs/config';
-import axios from 'axios';
-import * as admin from 'firebase-admin';
-import * as fs from 'fs';
-import { FacebookService } from '../facebook/facebook.service';
-export declare class AiService implements OnModuleInit {
-    private configService;
-    private firebaseAdmin;
-    private facebookService;
-    private readonly videoQueue;
+import { AiBaseService } from './services/ai-base.service';
+import { AiFacebookService } from './services/ai-facebook.service';
+import { AiTikTokService } from './services/ai-tiktok.service';
+import { AiMediaService } from './services/ai-media.service';
+import { AiAutomationService } from './services/ai-automation.service';
+import { AiVideoProcessorService } from './services/ai-video-processor.service';
+export declare class AiService {
+    private readonly base;
+    private readonly facebook;
+    private readonly tiktok;
+    private readonly media;
+    private readonly automation;
+    private readonly video;
     private readonly logger;
-    private genAI;
-    private model;
-    private tikwmBaseUrl;
-    private cache;
-    private CACHE_TTL;
-    private currentGeminiKey;
-    private currentFptKey;
-    private currentScrapingBeeKey;
-    private currentRapidApiKey;
-    private currentReplicateKey;
-    private replicate;
-    private readonly CREDIT_COSTS;
-    constructor(configService: ConfigService, firebaseAdmin: admin.app.App, facebookService: FacebookService, videoQueue: Queue);
-    private initializeModels;
-    private listenToApiKeys;
-    getJobStatus(jobId: string): Promise<{
-        id: string | undefined;
-        state: import("bullmq").JobState | "unknown";
-        progress: any;
-        result: any;
-        reason: string;
+    constructor(base: AiBaseService, facebook: AiFacebookService, tiktok: AiTikTokService, media: AiMediaService, automation: AiAutomationService, video: AiVideoProcessorService);
+    generateContent(body: any, userId: string): Promise<any>;
+    generateSpeech(body: any, userId: string): Promise<any>;
+    generateImageMockup(prompt: string, productImg: any, logoImg: any, modelImg: any, ratio: any, userId: string): Promise<any>;
+    generateKocProductImage(kocId: string, productImg: string, prompt: string, userId: string, modelOverride?: string, bgImg?: string): Promise<{
+        url: string | null;
+        urls: string[];
     }>;
-    private generateAIContentWithRetry;
-    private deductCredits;
-    analyzeFacebookAd(url: string | undefined, userId: string): Promise<any>;
-    getAdsAnalysisHistory(userId: string): Promise<any[]>;
-    compareFacebookAds(analysisA: any, analysisB: any, userId: string): Promise<any>;
-    fetchContentFromUrl(url: string, userId: string): Promise<any>;
-    searchKeywordDiscovery(query: string, retryCount: number | undefined, userId: string): Promise<any[]>;
-    getTrendingKeywords(category: string, userId: string, type?: 'hot' | 'potential'): Promise<any[]>;
-    getKeywordDetail(keyword: string, userId: string): Promise<any>;
+    generateKocVisual(body: any, userId: string): Promise<{
+        url: string | null;
+        urls: string[];
+    }>;
+    generateSmartBanner(body: any, userId: string): Promise<{
+        url: string;
+    }>;
+    removeBackground(url: string, userId: string): Promise<any>;
+    enhanceImage(url: string, userId: string): Promise<any>;
+    generateVisualClone(modelImg: string, prompt: string, userId: string, templateImg?: string, count?: number, fidelity?: number, creativity?: number): Promise<any>;
+    getAiKocs(userId: string): Promise<any[]>;
+    createAiKoc(data: any, userId: string): Promise<any>;
+    deleteAiKoc(id: string, userId: string): Promise<any>;
+    analyzeFacebookAd(url: string, userId: string): Promise<any>;
+    getAdsAnalysisHistory(userId: string): Promise<{
+        id: string;
+    }[]>;
+    compareFacebookAds(a: any, b: any, userId: string): Promise<any>;
+    fetchContentFromUrl(url: string, userId: string): Promise<string>;
+    searchKeywordDiscovery(kw: string, limit: number, userId: string): Promise<any>;
+    getKeywordDetail(kw: string, userId: string): Promise<any>;
+    getTrendingKeywords(cat: string, userId: string, type: string): Promise<any[]>;
     evaluateAndImproveContent(content: string, platform: string, userId: string): Promise<any>;
-    private trackUsage;
-    private checkLimit;
-    generateContent(data: {
-        platform: string;
-        length?: string;
-        brand: string;
-        field: string;
-        features: string;
-        price: string;
-        offers: string;
-        mode?: string;
-        framework?: string;
-        tone?: string;
-        category?: string;
-        videoType?: string;
-    }, userId: string): Promise<any>;
-    generateSpeech(data: {
-        text: string;
-        voice: string;
-        speed: number;
-    }, userId: string): Promise<any>;
-    downloadProxy(url: string): Promise<axios.AxiosResponse<any, any, {}>>;
-    generateImageMockup(originalPrompt: string, productImage?: string, logoImage?: string, modelImage?: string, aspectRatio?: string, userId?: string): Promise<{
-        url: string;
-    }>;
-    private resolveBase64Image;
-    generateSmartBanner(data: {
-        productImage?: string;
-        productImages?: string[];
-        modelImage?: string;
-        logoImage?: string;
-        refImage?: string;
-        companyName?: string;
-        productName?: string;
-        slogan: string;
-        price: string;
-        details?: string;
-        industry?: string;
-        style: string;
-        aspectRatio: string;
-        quality: string;
-    }, userId: string): Promise<{
-        url: string;
-    }>;
-    private uploadBase64ToStorage;
-    generateMarketingPlan(data: {
-        productName: string;
-        description: string;
-        targetAudience: string;
-        goal: string;
-        budget?: string;
-        duration: string;
-    }, userId: string): Promise<any>;
+    analyzeTikTokChannel(id: string, userId: string): Promise<any>;
+    generateTikTokVideoScript(id: string, niche: string, userId: string): Promise<any>;
+    getTikTokTrending(region: string, count: number, refresh: boolean, category: any, userId: string): Promise<any>;
+    downloadTikTokVideo(url: string, userId: string): Promise<any>;
+    generateVideoScript(body: any, userId: string): Promise<any>;
+    runAutomationById(id: string, userId: string, isTest: boolean): Promise<any>;
+    generateLandingPage(prompt: string): Promise<any>;
     scrapeProductData(url: string, userId: string): Promise<any>;
-    generateVideoScript(data: {
-        productName: string;
-        brand: string;
-        description: string;
-        vibe: string;
-        ratio: string;
-        duration: string;
-    }, userId: string): Promise<any>;
-    downloadUniversalVideo(url: string, userId: string): Promise<any>;
-    private detectPlatform;
-    downloadTikTokVideo(url: string, userId: string, skipDeduction?: boolean): Promise<any>;
-    private callTikWM;
-    analyzeTikTokChannel(uniqueId: string, userId: string): Promise<any>;
-    generateTikTokAIAnalysis(user: any, stats: any, videos: any[], retryCount?: number): Promise<any>;
-    private getDefaultAIAnalysis;
-    getTikTokUserVideos(uniqueId: string, userIdOrSecUid?: string): Promise<any>;
-    private calculateHealthScore;
-    generateTikTokVideoScript(uniqueId: string, niche: string, userId: string): Promise<any>;
-    getTikTokTrending(region?: string, count?: number, refresh?: boolean, category?: string, userId?: string): Promise<any>;
-    generateLandingPage(userPrompt: string): Promise<any>;
-    private extractAudioWithFFmpeg;
-    private burnSubtitlesWithFFmpeg;
-    generateAutoSubtitles(file: any, srcLang: string, targetLang: string, style: string, fontSize?: number, yPos?: number, userId?: string, subColor?: string, subBgColor?: string): Promise<any>;
-    processAutoSubJob(job: any): Promise<{
+    generateMarketingPlan(body: any, userId: string): Promise<any>;
+    generateAutoSubtitles(file: any, src: string, target: string, style: string, size: number, y: number, userId: string, color?: string, bgColor?: string): Promise<{
         success: boolean;
-        srtContent: any;
-        videoId: any;
+        videoId: string;
+        srtContent: string;
+        burnSuccess: boolean;
+        message: string;
     }>;
-    downloadBurnedVideo(fileId: string): Promise<{
-        stream: fs.ReadStream;
-        size: number;
-    }>;
-    streamBurnedVideo(fileId: string, req: any, res: any): Promise<any>;
-    streamDubbedVideo(jobId: string, req: any, res: any): Promise<void>;
-    updateSrtContent(fileId: string, srtContent: string, style?: string, fontSize?: number, yPos?: number, subColor?: string, subBgColor?: string): Promise<any>;
-    onModuleInit(): Promise<void>;
-    private checkProductTriggeredAutomations;
-    private checkScheduledAutomations;
-    runAutomationById(id: string, userId: string, isTest?: boolean, triggeredProducts?: any[] | null): Promise<void>;
-    private processSingleContentTask;
-    private processProductVideoTask;
-    renderAutomationVideo(resultId: string, userId: string, workflowId?: string): Promise<{
+    renderAutomationVideo(resId: string, userId: string, wfId?: string): Promise<{
         success: boolean;
         videoUrl: string;
     }>;
-    generateVideoDubbing(file: any, targetVoice: string, targetLang: string, userId: string, bgVolume?: number, dubVolume?: number, showSubtitles?: boolean, subStyle?: {
-        color?: string;
-        fontSize?: number;
-        bgColor?: string;
-        verticalPos?: number;
-    }): Promise<any>;
-    processDubbingJob(job: any): Promise<{
-        success: boolean;
-        videoId: any;
-        jobDir: string;
-    }>;
-    private parseSrt;
-    private srtTimeToSeconds;
-    private getVideoDuration;
-    private getAudioDuration;
-    private stretchAudio;
-    private removeAudioFromVideo;
-    private muxDubbedVideo;
-    private splitLongSegments;
-    private formatSrt;
-    private secondsToSrtTime;
-    generateKolVideo(imageUrl: string, videoUrl: string, userId: string): Promise<{
+    generateVideoDubbing(file: any, voice: string, lang: string, userId: string, bg: number, dub: number, sub: boolean, style: any): Promise<{
         jobId: string | undefined;
         message: string;
     }>;
-    processKolVideoJob(job: Job<any, any, string>): Promise<{
-        videoUrl: string;
+    generateKolVideo(img: string, vid: string, userId: string): Promise<{
+        jobId: string;
+        message: string;
     }>;
-    downloadDubbedVideo(jobId: string): Promise<any>;
-    removeBackground(imageUrl: string, userId: string): Promise<any>;
-    enhanceImage(imageUrl: string, userId: string): Promise<any>;
-    generateVisualClone(modelImage: string, templatePrompt: string, userId: string, templateImage?: string, count?: number, fidelity?: number, creativity?: number): Promise<any>;
-    getAiKocs(userId: string): Promise<{
-        id: string;
-    }[]>;
-    createAiKoc(data: {
-        name: string;
-        imageUrl: string;
-        tags?: string[];
-    }, userId: string): Promise<{
-        userId: string;
-        createdAt: admin.firestore.FieldValue;
-        updatedAt: admin.firestore.FieldValue;
-        name: string;
-        imageUrl: string;
-        tags?: string[];
-        id: string;
-    }>;
-    deleteAiKoc(id: string, userId: string): Promise<{
+    processAutoSubJob(job: any): Promise<{
         success: boolean;
     }>;
-    generateKocProductImage(kocId: string, productImage: string, prompt: string, userId: string, modelImageOverride?: string, bgImage?: string): Promise<{
-        urls: string[];
+    processDubbingJob(job: any): Promise<{
+        success: boolean;
+        videoId: string;
     }>;
-    private callSingleGeminiImageGen;
-    generateKocVisual(data: {
-        kocId: string;
-        angle: string;
-        outfit: string;
-        hairColor: string;
-        action: string;
-    }, userId: string): Promise<{
-        url: string | null;
+    processKolVideoJob(job: any): Promise<{
+        success: boolean;
     }>;
-    processReburnJob(job: any): Promise<any>;
+    processReburnJob(job: any): Promise<{
+        success: boolean;
+    }>;
+    getJobStatus(jobId: string): Promise<{
+        id: string;
+        state: string;
+    }>;
+    getMembershipConfigs(): Promise<any>;
+    downloadProxy(url: string): Promise<import("axios").AxiosResponse<any, any, {}>>;
 }

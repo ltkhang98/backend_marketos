@@ -25,6 +25,7 @@ const mail_module_1 = require("./mail/mail.module");
 const store_orders_module_1 = require("./store-orders/store-orders.module");
 const facebook_module_1 = require("./facebook/facebook.module");
 const logger_module_1 = require("./common/logger/logger.module");
+const media_module_1 = require("./media/media.module");
 let AppModule = class AppModule {
 };
 exports.AppModule = AppModule;
@@ -55,6 +56,7 @@ exports.AppModule = AppModule = __decorate([
             store_orders_module_1.StoreOrdersModule,
             facebook_module_1.FacebookModule,
             logger_module_1.LoggerModule,
+            media_module_1.MediaModule,
         ],
         controllers: [app_controller_1.AppController],
         providers: [app_service_1.AppService],

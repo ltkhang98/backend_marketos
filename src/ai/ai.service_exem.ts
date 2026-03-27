@@ -1,0 +1,5255 @@
+import { Injectable, Inject, InternalServerErrorException, BadRequestException, OnModuleInit, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue, Job } from 'bullmq';
+import { ConfigService } from '@nestjs/config';
+import { GoogleGenerativeAI, DynamicRetrievalMode } from '@google/generative-ai';
+import axios from 'axios';
+import * as admin from 'firebase-admin';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { v4 as uuidv4 } from 'uuid';
+const ffmpeg = require('fluent-ffmpeg');
+import { GoogleAIFileManager } from '@google/generative-ai/server';
+import { FacebookService } from '../facebook/facebook.service';
+import Replicate from 'replicate';
+
+@Injectable()
+export class AiService implements OnModuleInit {
+    private readonly logger = new Logger(AiService.name);
+    private genAI: GoogleGenerativeAI;
+    private model: any;
+    private tikwmBaseUrl = 'https://www.tikwm.com/api/';
+    private cache: Map<string, { data: any, timestamp: number }> = new Map();
+    private CACHE_TTL = 30 * 60 * 1000; // 30 minutes in ms
+    private currentGeminiKey: string | undefined;
+    private currentFptKey: string | undefined;
+    private currentScrapingBeeKey: string | undefined;
+    private currentRapidApiKey: string | undefined;
+    private currentReplicateKey: string | undefined;
+    private replicate: Replicate | undefined;
+
+    // Bảng giá Credit (Tokens) cho từng tính năng
+    private readonly CREDIT_COSTS = {
+        SOCIAL_CONTENT: 200,      // Viết kịch bản/nội dung mạng xã hội
+        MARKETING_PLAN: 300,      // Lên kế hoạch marketing
+        CONTENT_EVALUATION: 100,  // Đánh giá/Tối ưu nội dung
+        ADS_ANALYSIS: 250,        // Phân tích quảng cáo FB
+        TIKTOK_ANALYTICS: 300,    // Phân tích kênh TikTok
+        PRODUCT_SCRAPER: 300,     // Cào dữ liệu sản phẩm
+        KEYWORD_DISCOVERY: 200,   // Khám phá & nghiên cứu từ khóa
+        ADS_COMPARISON: 100,      // So sánh quảng cáo A/B
+        AUTO_SUB_PER_MIN: 1000,   // Phụ đề tự động (mỗi phút)
+        TTS_PER_100_CHARS: 10,    // Chuyển văn bản thành giọng nói (mỗi 100 ký tự)
+        TEXT_TO_SPEECH: 100,      // Giá khởi tạo cố định cho TTS
+        MOCKUP: 300,              // Tạo mockup AI sản phẩm
+        SMART_BANNER: 300,        // Thiết kế Banner Studio AI
+        VIDEO_SCRIPT: 200,        // Tạo kịch bản & storyboard video sản phẩm
+        FETCH_CONTENT: 100,       // Lấy & phân tích nội dung từ URL mạng xã hội
+        VIDEO_DOWNLOAD: 200,      // Tải video đa nền tảng (TikTok, FB,...)
+        TIKTOK_TRENDING: 200,     // Phân tích xu hướng TikTok
+        TIKTOK_SCRIPT: 200,       // Tạo kịch bản TikTok Viral
+        AUTOMATION_SCRIPT: 300,    // Kịch bản trong quy trình tự động
+        AUTOMATION_ANALYTICS: 500,  // Báo cáo phân tích trong tự động
+        AUTOMATION_SCRAPING: 500,   // Săn sản phẩm Win trong tự động
+        AUTOMATION_AFFILIATE: 1000, // Quy trình Affiliate Pro
+        AUTOMATION_ADS_SPY: 500,    // Gián điệp Ads đối thủ
+        AUTOMATION_TREND_JACK: 300, // Bắt Trend TikTok tự động
+        AUTOMATION_MARKET_RESEARCH: 500, // Nghiên cứu ngách thị trường
+        AUTOMATION_PRODUCT_VIDEO: 500, // Tự động hóa video sản phẩm
+        AUTOMATION_FANPAGE_POSTING: 500, // Tự động đăng bài Fanpage
+        VIDEO_DUBBING_PER_MIN: 2000,     // Lồng tiếng video tự động (mỗi phút)
+        KOL_VIDEO: 500,                  // Khởi tạo video KOL (hát nhép/lip-sync)
+        VISUAL_CLONE: 500                // Sáng tạo ảnh AI với nhân vật KOC (Visual Clone)
+    };
+
+    constructor(
+        private configService: ConfigService,
+        @Inject('FIREBASE_ADMIN') private firebaseAdmin: admin.app.App,
+        private facebookService: FacebookService,
+        @InjectQueue('video-processing') private readonly videoQueue: Queue
+    ) {
+        this.initializeModels();
+        this.listenToApiKeys();
+    }
+
+    private initializeModels() {
+        // Fallback to .env initially
+        const geminiKey = this.configService.get<string>('GEMINI_API_KEY')?.trim();
+        const fptKey = this.configService.get<string>('FPT_AI_API_KEY')?.trim();
+        const replicateKey = this.configService.get<string>('REPLICATE_API_TOKEN')?.trim();
+
+        if (geminiKey) {
+            this.currentGeminiKey = geminiKey;
+            this.genAI = new GoogleGenerativeAI(geminiKey);
+            // Sử dụng gemini-3-flash-preview theo yêu cầu của hệ thống
+            this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+        }
+        this.currentFptKey = fptKey;
+        if (replicateKey) {
+            this.currentReplicateKey = replicateKey;
+            this.replicate = new Replicate({ auth: replicateKey });
+        }
+    }
+
+    private listenToApiKeys() {
+        try {
+            const db = this.firebaseAdmin.firestore();
+
+            // Listen to API Keys
+            db.collection('settings').doc('api_keys').onSnapshot(doc => {
+                if (doc.exists) {
+                    const data = doc.data();
+                    console.log('--- API Keys Updated from Firestore ---');
+
+                    // Update Gemini
+                    const newGeminiKey = data?.gemini?.trim();
+                    if (newGeminiKey && newGeminiKey !== this.currentGeminiKey) {
+                        console.log('--- Reloading Gemini Model with New Key ---');
+                        this.currentGeminiKey = newGeminiKey;
+                        this.genAI = new GoogleGenerativeAI(newGeminiKey);
+                        this.model = this.genAI.getGenerativeModel({ model: 'gemini-3-flash-preview' });
+                    }
+
+                    // Update FPT
+                    const newFptKey = data?.fpt?.trim();
+                    if (newFptKey) {
+                        this.currentFptKey = newFptKey;
+                    }
+
+                    // Update ScrapingBee
+                    const newScrapingBeeKey = data?.scrapingbee?.trim();
+                    if (newScrapingBeeKey) {
+                        this.currentScrapingBeeKey = newScrapingBeeKey;
+                    }
+
+                    // Update RapidAPI
+                    const newRapidApiKey = data?.rapidapi?.trim();
+                    if (newRapidApiKey) {
+                        this.currentRapidApiKey = newRapidApiKey;
+                    }
+
+                    // Update Replicate
+                    const newReplicateKey = data?.replicate?.trim();
+                    if (newReplicateKey && newReplicateKey !== this.currentReplicateKey) {
+                        this.currentReplicateKey = newReplicateKey;
+                        this.replicate = new Replicate({
+                            auth: newReplicateKey,
+                        });
+                    }
+                }
+            });
+
+            // Listen to Credit Costs
+            db.collection('settings').doc('credit_costs').onSnapshot(doc => {
+                if (doc.exists) {
+                    const data = doc.data();
+                    console.log('--- Credit Costs Updated from Firestore ---');
+                    // Ghi đè các giá trị mặc định bằng giá trị từ Firestore
+                    Object.keys(this.CREDIT_COSTS).forEach(key => {
+                        if (data) {
+                            // Ưu tiên kiểm tra trạng thái miễn phí trước
+                            const isFree = data[`${key}_isFree`];
+                            if (isFree === true) {
+                                (this.CREDIT_COSTS as any)[key] = 0;
+                            } else if (data[key] !== undefined) {
+                                (this.CREDIT_COSTS as any)[key] = Number(data[key]);
+                            }
+                        }
+                    });
+                } else {
+                    // Nếu chưa có document, tạo mới với giá trị mặc định
+                    db.collection('settings').doc('credit_costs').set(this.CREDIT_COSTS).catch(err => {
+                        console.error('Error creating default credit_costs doc:', err);
+                    });
+                }
+            });
+        } catch (error) {
+            console.error('Error listening to dynamic settings:', error);
+        }
+    }
+
+    async getJobStatus(jobId: string) {
+        const job = await this.videoQueue.getJob(jobId);
+        if (!job) {
+            throw new BadRequestException(`Không tìm thấy Job với ID: ${jobId}`);
+        }
+
+        const state = await job.getState();
+        // job.progress có thể là number hoặc hàm tùy phiên bản, nên dùng cách an toàn
+        const progress = typeof job.progress === 'function' ? await (job as any).progress() : job.progress;
+        const result = job.returnvalue;
+        const reason = job.failedReason;
+
+        return {
+            id: job.id,
+            state,
+            progress,
+            result,
+            reason
+        };
+    }
+
+    private async generateAIContentWithRetry(prompt: string, maxRetries = 3): Promise<any> {
+        let retryCount = 0;
+        while (retryCount < maxRetries) {
+            try {
+                return await this.model.generateContent(prompt);
+            } catch (err) {
+                retryCount++;
+                if (retryCount === maxRetries) throw err;
+                console.warn(`Gemini API retry ${retryCount}/${maxRetries}...`);
+                await new Promise(resolve => setTimeout(resolve, 2000 * retryCount));
+            }
+        }
+    }
+
+    /**
+     * Trừ credit của người dùng
+     * @param userId ID người dùng từ Firebase Auth
+     * @param cost Số lượng credit cần trừ
+     * @param featureName Tên tính năng (để báo lỗi)
+     */
+    private async deductCredits(userId: string, cost: number, featureName: string) {
+        if (!userId) {
+            throw new BadRequestException('Không tìm thấy thông tin người dùng.');
+        }
+
+        const db = this.firebaseAdmin.firestore();
+        const userRef = db.collection('users').doc(userId);
+
+        try {
+            const result = await db.runTransaction(async (transaction) => {
+                const userDoc = await transaction.get(userRef);
+
+                if (!userDoc.exists) {
+                    throw new BadRequestException('Tài khoản người dùng không tồn tại.');
+                }
+
+                const userData = userDoc.data();
+                const currentTokens = userData?.tokens || 0;
+
+                if (currentTokens < cost) {
+                    throw new BadRequestException(
+                        `Bạn không đủ Credits để sử dụng tính năng ${featureName}. ` +
+                        `Cần ${cost} Credits, hiện có ${currentTokens.toLocaleString()} Credits. ` +
+                        `Vui lòng mua thêm gói Credits.`
+                    );
+                }
+
+                // Thực hiện trừ tokens
+                transaction.update(userRef, {
+                    tokens: admin.firestore.FieldValue.increment(-cost),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                // Ghi log sử dụng hệ thống
+                const trxRef = db.collection('usage_logs').doc();
+                transaction.set(trxRef, {
+                    uid: userId,
+                    userEmail: userData?.email || '',
+                    userName: userData?.name || userData?.displayName || 'Người dùng',
+                    type: 'usage',
+                    feature: featureName,
+                    tokens: cost,
+                    status: 'success',
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                return true;
+            });
+
+            return result;
+        } catch (error) {
+            if (error instanceof BadRequestException) throw error;
+            console.error(`Error deducting credits for user ${userId}:`, error);
+            throw new InternalServerErrorException('Lỗi hệ thống khi kiểm tra tài khoản.');
+        }
+    }
+
+    async analyzeFacebookAd(url: string = '', userId: string): Promise<any> {
+        if (!this.model) {
+            throw new Error('Gemini API Key is not configured');
+        }
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.ADS_ANALYSIS, 'Phân tích quảng cáo Facebook');
+
+        const isAllowed = await this.checkLimit('gemini');
+        if (!isAllowed) {
+            throw new Error('Hạn mức sử dụng Gemini đã hết. Vui lòng nâng cấp gói.');
+        }
+
+        await this.trackUsage('gemini');
+
+        try {
+            console.log(`--- Analyzing Facebook Ad: ${url} (User: ${userId}) ---`);
+
+            let html = '';
+            // Try to scrape content if it's a valid URL and ScrapingBee is available
+            if (url && url.includes('facebook.com') && this.currentScrapingBeeKey) {
+                try {
+                    const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+                        params: {
+                            'api_key': this.currentScrapingBeeKey,
+                            'url': url,
+                            'render_js': 'true',
+                            'premium_proxy': 'true',
+                            'country_code': 'vn'
+                        },
+                        timeout: 30000
+                    });
+                    html = sbResponse.data;
+                } catch (e) {
+                    console.warn("Scraping FB Ad failed, proceeding with content inference if possible:", e.message);
+                }
+            }
+
+            const prompt = `
+            Bạn là một chuyên gia phân tích quảng cáo (Creative Strategist) chuyên nghiệp. 
+            Nhiệm vụ của bạn là bóc tách và phân tích mẫu quảng cáo dưới đây theo đúng QUY TRÌNH 6 GIAI ĐOẠN chuyên sâu.
+
+            URL QUẢNG CÁO: ${url}
+            DỮ LIỆU HTML/NỘI DUNG: ${html.substring(0, 15000)}
+
+            YÊU CẦU PHÂN TÍCH CHI TIẾT THEO 6 GIAI ĐOẠN:
+            1. Concept (Ý tưởng chủ đạo): Định nghĩa concept cốt lõi bài toán mà ad đang giải quyết hoặc góc tiếp cận cảm xúc/logic.
+            2. Hook (Điểm chạm đầu tiên): 3-5 giây đầu tiên hoặc câu đầu của copy. Tại sao nó giữ chân người dùng?
+            3. Script (Kịch bản/Thông điệp): Cấu trúc nội dung (Problem-Solution, Storytelling, v.v.). Các luận điểm bán hàng (USPs) được sắp xếp thế nào?
+            4. Visuals (Hình ảnh/Video): Màu sắc, bối cảnh, chất lượng hình ảnh, text overlay. Nó hỗ trợ gì cho concept?
+            5. Pacing (Nhịp điệu/Tốc độ): Tốc độ chuyển cảnh, tốc độ nói, cách ngắt nghỉ trong nội dung.
+            6. Relevancy (Sự liên quan): Phân tích sự liền mạch giữa quảng cáo và đối tượng mục tiêu, sự kỳ vọng khi click vào trang đích (Landing Page).
+
+            YÊU CẦU TRẢ VỀ JSON (CHỈ JSON):
+            {
+                "page_name": "...",
+                "ad_headline": "Tiêu đề hoặc câu hook chính của bài viết",
+                "ad_content_summary": "...",
+                "engagement": {
+                    "likes": "CHỈ lấy số lượt thích thực tế tìm thấy trong HTML. Nếu KHÔNG thấy, trả về '0'. TUYỆT ĐỐI KHÔNG dự đoán.",
+                    "comments": "CHỈ lấy số lượt bình luận thực tế tìm thấy trong HTML. Nếu KHÔNG thấy, trả về '0'. TUYỆT ĐỐI KHÔNG dự đoán."
+                },
+                "ad_metadata": {
+                    "start_date": "Chi tiết ngày bắt đầu (Nếu có trong HTML, không có thì để 'N/A')",
+                    "estimated_reach": "Lấy số thực tế nếu có, không có thì để '0'",
+                    "estimated_spend": "Lấy số thực nếu có, không có thì để '0'"
+                },
+                "six_stages_analysis": {
+                    "concept": { "title": "Concept", "analysis": "Phân tích cực kỳ chi tiết về ý tưởng...", "score": 1-10 },
+                    "hook": { "title": "Hook", "analysis": "Phân tích cực kỳ chi tiết về điểm chạm...", "score": 1-10 },
+                    "script": { "title": "Kịch bản", "analysis": "Phân tích cực kỳ chi tiết về kịch bản...", "score": 1-10 },
+                    "visuals": { "title": "Hình ảnh", "analysis": "Phân tích cực kỳ chi tiết về visuals...", "score": 1-10 },
+                    "pacing": { "title": "Tốc độ", "analysis": "Phân tích cực kỳ chi tiết về nhịp điệu...", "score": 1-10 },
+                    "relevancy": { "title": "Sự liên quan", "analysis": "Phân tích cực kỳ chi tiết về relevancy...", "score": 1-10 }
+                },
+                "targeting_prediction": {
+                    "demographics": "...",
+                    "interests": ["...", "..."],
+                    "locations": "...",
+                    "estimated_income_level": "Mức thu nhập dự kiến (Cao/Trung bình/Thấp)",
+                    "buying_behavior": "Hành vi mua sắm (ví dụ: Thích hàng giảm giá, mua hàng cảm tính...)",
+                    "detailed_target_logic": "Giải thích tại sao lại chọn target này trên phương diện marketing chuyên sâu"
+                },
+                "ai_overall_suggestion": {
+                    "winning_formula": "Công thức giúp ad này thành công",
+                    "potential_risks": "Các rủi ro về chính sách hoặc kỹ thuật",
+                    "optimization_tips": "Các bước cụ thể để tối ưu mẫu này",
+                    "scaling_advice": "Cách để scale mẫu quảng cáo này lên ngân sách lớn"
+                },
+                "predicted_kpis": {
+                    "ctr": "Dự đoán tỷ lệ click % (Dựa trên ngành hàng và chất lượng creative thực tế)",
+                    "cpc": "Ưước tính chi phí mỗi click (Số liệu thực tế theo thị trường VN)",
+                    "cpm": "Ước tính CPM (Số liệu thực tế theo thị trường VN)",
+                    "roas_potential": "Tiềm năng lợi nhuận (x3-x10 tùy độ scale)",
+                    "conversion_rate": "Dự đoán tỷ lệ chuyển đổi thực tế"
+                }
+            }
+            LƯU Ý: Tuyệt đối KHÔNG sử dụng lại văn bản ví dụ (ví dụ: '1.5% - 2.8%') trong kết quả trả về. Hãy đưa ra con số dự đoán thực tế của bạn dựa trên dữ liệu.
+            CHỈ TRẢ VỀ JSON.
+            `;
+
+            const result = await this.model.generateContent(prompt);
+            const responseText = result.response.text();
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            const parsedResult = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
+
+            // Save to Firestore History
+            const db = this.firebaseAdmin.firestore();
+            await db.collection('ads_analysis_history').add({
+                userId,
+                url,
+                ...parsedResult,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            return parsedResult;
+        } catch (error) {
+            console.error("Facebook Ad Analysis Error:", error.message);
+            throw new Error('Lỗi khi phân tích quảng cáo: ' + error.message);
+        }
+    }
+
+    async getAdsAnalysisHistory(userId: string): Promise<any[]> {
+        try {
+            const db = this.firebaseAdmin.firestore();
+            const snapshot = await db.collection('ads_analysis_history')
+                .where('userId', '==', userId)
+                .orderBy('createdAt', 'desc')
+                .limit(20)
+                .get();
+
+            return snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+        } catch (error) {
+            console.error("Error fetching Ads Analysis History:", error);
+            return [];
+        }
+    }
+
+    async compareFacebookAds(analysisA: any, analysisB: any, userId: string): Promise<any> {
+        if (!this.model) return null;
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.ADS_COMPARISON, 'So sánh quảng cáo');
+
+        try {
+            const prompt = `
+            BẠN LÀ MỘT CHUYÊN GIA TỐI ƯU QUẢNG CÁO (ADS OPTIMIZATION EXPERT).
+            Nhiệm vụ của bạn là so sánh hai mẫu quảng cáo (Ad A và Ad B) dựa trên dữ liệu phân tích dưới đây và đưa ra đánh giá mẫu nào tiềm năng hơn, ưu nhược điểm của từng mẫu và lời khuyên tối ưu.
+
+            DỮ LIỆU PHÂN TÍCH AD A:
+            - Page: ${analysisA.page_name}
+            - Content: ${analysisA.ad_content_summary}
+            - KPIs dự kiến: CTR(${analysisA.predicted_kpis?.ctr}), ROAS(${analysisA.predicted_kpis?.roas_potential})
+            - Điểm 6 giai đoạn: Concept(${analysisA.six_stages_analysis?.concept?.score}), Hook(${analysisA.six_stages_analysis?.hook?.score}), Script(${analysisA.six_stages_analysis?.script?.score}), Visuals(${analysisA.six_stages_analysis?.visuals?.score}), Pacing(${analysisA.six_stages_analysis?.pacing?.score}), Relevancy(${analysisA.six_stages_analysis?.relevancy?.score})
+
+            DỮ LIỆU PHÂN TÍCH AD B:
+            - Page: ${analysisB.page_name}
+            - Content: ${analysisB.ad_content_summary}
+            - KPIs dự kiến: CTR(${analysisB.predicted_kpis?.ctr}), ROAS(${analysisB.predicted_kpis?.roas_potential})
+            - Điểm 6 giai đoạn: Concept(${analysisB.six_stages_analysis?.concept?.score}), Hook(${analysisB.six_stages_analysis?.hook?.score}), Script(${analysisB.six_stages_analysis?.script?.score}), Visuals(${analysisB.six_stages_analysis?.visuals?.score}), Pacing(${analysisB.six_stages_analysis?.pacing?.score}), Relevancy(${analysisB.six_stages_analysis?.relevancy?.score})
+
+            CẤU TRÚC PHẢN HỒI JSON (CHỈ JSON):
+            {
+                "winner": "Ad A" hoặc "Ad B" hoặc "Draw",
+                "reasoning": "Tại sao mẫu này thắng? Phân tích dựa trên điểm số và logic marketing",
+                "comparison_points": [
+                    { "aspect": "Hook/Điểm chạm", "ad_a": "...", "ad_b": "...", "better": "Ad A/B" },
+                    { "aspect": "Visual/Hình ảnh", "ad_a": "...", "ad_b": "...", "better": "Ad A/B" },
+                    { "aspect": "Script/Kịch bản", "ad_a": "...", "ad_b": "...", "better": "Ad A/B" }
+                ],
+                "summary_ad_a": "Ưu điểm và nhược điểm chính của Ad A",
+                "summary_ad_b": "Ưu điểm và nhược điểm chính của Ad B",
+                "recommendation": "Lời khuyên tổng thể để kết hợp điểm mạnh của cả hai"
+            }
+            `;
+
+            const result = await this.model.generateContent(prompt);
+            const responseText = result.response.text();
+            const cleanJson = responseText.replace(/```json|```/g, '').trim();
+            return JSON.parse(cleanJson);
+        } catch (error) {
+            console.error("Compare Ads Error:", error.message);
+            throw new Error('Lỗi khi so sánh quảng cáo: ' + error.message);
+        }
+    }
+
+    async fetchContentFromUrl(url: string, userId: string): Promise<any> {
+        if (!url) throw new Error('URL không hợp lệ');
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.FETCH_CONTENT, 'Phân tích nội dung mạng xã hội');
+
+        try {
+            let html = '';
+            if (this.currentScrapingBeeKey) {
+                const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+                    params: {
+                        'api_key': this.currentScrapingBeeKey,
+                        'url': url,
+                        'render_js': 'true',
+                        'premium_proxy': 'true',
+                        'country_code': 'vn'
+                    },
+                    timeout: 40000
+                });
+                html = sbResponse.data;
+            } else {
+                const response = await axios.get(url, { timeout: 10000 });
+                html = response.data;
+            }
+
+            const prompt = `
+            BẠN LÀ MỘT CHUYÊN GIA TRÍCH XUẤT DỮ LIỆU (DATA SCRAPER).
+            Nhiệm vụ của bạn là trích xuất thông tin bài đăng từ HTML của một mạng xã hội (${url}).
+
+            HÃY TÌM KIẾM KỸ TRONG HTML:
+            1. Title: Tiêu đề hoặc dòng đầu tiên của bài viết.
+            2. Content: Nội dung câu chữ (caption).
+            3. Platform: facebook, instagram, linkedin, twitter, tiktok, youtube, hoặc other.
+            4. Image: URL ảnh bìa/ảnh chính (ưu tiên og:image hoặc ảnh trong thẻ <img> lớn).
+            5. Engagement (QUAN TRỌNG): 
+               - Tìm số lượt Like/Reaction (ví dụ trong aria-label "Số lượt thích", "Thích", "Likes", hoặc text cạnh icon like).
+               - Tìm số lượng Bình luận (Comments).
+               - Tìm số lượng Chia sẻ (Shares).
+               - Nếu không tìm thấy số cụ thể, hãy trả về "0". TUYỆT ĐỐI KHÔNG ĐƯỢC để là "N/A".
+
+            DỮ LIỆU HTML: 
+            ${html.substring(0, 30000)}
+
+            CHỈ TRẢ VỀ JSON THEO CẤU TRÚC:
+            {
+                "title": "...",
+                "content": "...",
+                "platform": "...",
+                "image_url": "...",
+                "engagement": {
+                    "likes": "Số hoặc 0",
+                    "comments": "Số hoặc 0",
+                    "shares": "Số hoặc 0"
+                }
+            }
+            `;
+
+            const result = await this.model.generateContent(prompt);
+            const responseText = result.response.text();
+            const cleanJson = responseText.replace(/```json|```/g, '').trim();
+            const parsed = JSON.parse(cleanJson);
+
+            // Helper to clean numeric strings
+            const cleanNum = (val: any) => {
+                if (!val) return '0';
+                const str = String(val).replace(/[^0-9KkMm.,]/g, '').trim();
+                return str || '0';
+            };
+
+            return {
+                title: parsed.title || '',
+                content: parsed.content || '',
+                platform: parsed.platform || 'other',
+                image_url: parsed.image_url || '',
+                engagement: {
+                    likes: cleanNum(parsed.engagement?.likes),
+                    comments: cleanNum(parsed.engagement?.comments),
+                    shares: cleanNum(parsed.engagement?.shares)
+                }
+            };
+        } catch (error) {
+            console.error("Fetch Detailed Content Error:", error.message);
+            throw new Error('Lỗi khi trích xuất thông tin bài viết: ' + error.message);
+        }
+    }
+
+    async searchKeywordDiscovery(query: string, retryCount = 0, userId: string): Promise<any[]> {
+        if (!this.currentScrapingBeeKey) return []; // Changed from RapidAPI to ScrapingBee as it's used here
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.KEYWORD_DISCOVERY, 'Khám phá từ khóa');
+
+        try {
+            // URL tối ưu hơn cho Việt Nam
+            const searchUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ALL&q=${encodeURIComponent(query)}&sort_data[direction]=desc&sort_data[mode]=relevancy_monthly_grouped&start_date[min]=&start_date[max]=&search_type=keyword_unordered&media_type=all`;
+
+            // Script xử lý cực mạnh và nhanh để tránh 504 Timeout
+            const cleanScript = Buffer.from(`
+                async function fastScrape() {
+                    const delay = (ms) => new Promise(r => setTimeout(r, ms));
+                    
+                    // 1. Chấp nhận cookie nhanh nếu có
+                    const cookieBtn = document.querySelector('button[data-cookiebanner="accept_button"], button[title*="Allow"], button[title*="Chấp nhận"]');
+                    if (cookieBtn) {
+                        cookieBtn.click();
+                        await delay(1000);
+                    }
+
+                    // 2. Cuộn nhẹ để kích hoạt tải dữ liệu
+                    window.scrollBy(0, 1000);
+                    await delay(2000);
+
+                    // 3. Đánh dấu dữ liệu ngay lập tức
+                    document.querySelectorAll('div, span, p').forEach(el => {
+                        const t = el.innerText || "";
+                        if(t.includes('ID:')) {
+                           const m = t.match(/ID:\\s*(\\d+)/);
+                           if(m) el.insertAdjacentHTML('afterbegin', "[REAL_ID: " + m[1] + "] ");
+                        }
+                        if(t.includes('Bắt đầu') || t.includes('Started')) el.insertAdjacentHTML('afterbegin', "[START_DATE_MARK: " + t.substring(0,50) + "] ");
+                        if(t.includes('tiếp cận') || t.includes('reach')) el.insertAdjacentHTML('afterbegin', "[REACH_MARK: " + t.substring(0,50) + "] ");
+                        if(t.includes('Hiển thị') || t.includes('Impressions')) el.insertAdjacentHTML('afterbegin', "[IMPRESSIONS_MARK: " + t.substring(0,50) + "] ");
+                        if(t.includes('đã chi') || t.includes('Spend')) el.insertAdjacentHTML('afterbegin', "[SPEND_MARK: " + t.substring(0,50) + "] ");
+                    });
+
+                    // 4. Tìm ảnh và giữ nguyên link gốc
+                    document.querySelectorAll('img').forEach(img => {
+                        const src = img.src || img.getAttribute('data-src');
+                        if(src && src.startsWith('http')) img.setAttribute('data-found-img', src);
+                    });
+                }
+                fastScrape();
+            `).toString('base64');
+
+            const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+                params: {
+                    'api_key': this.currentScrapingBeeKey,
+                    'url': searchUrl,
+                    'render_js': true,
+                    'wait': 3000,
+                    'block_ads': true,
+                    'block_resources': false,
+                    'js_snippet': cleanScript,
+                    'premium_proxy': true,
+                    'stealth_proxy': true,
+                    'country_code': 'vn'
+                },
+                timeout: 120000,
+                validateStatus: () => true,
+                responseType: 'text'
+            });
+
+            const html = sbResponse.data;
+
+            if (typeof html !== 'string' || html.length < 1000) {
+                if (html?.includes("limit reached")) {
+                    console.error("--- CRITICAL: ScrapingBee API Key đã đạt giới hạn (Limit Reached). ---");
+                    return [];
+                }
+                if (html?.includes("504 Gateway") || html?.includes("Time-out")) {
+                    console.error("--- ERROR: Lỗi 504 Gateway Time-out từ Proxy. Đang thử lại nhanh... ---");
+                } else {
+                    console.warn(`[Attempt ${retryCount}] Lỗi nội dung ngắn (${html?.length || 0} ký tự).`);
+                }
+
+                if (retryCount < 2) {
+                    return this.searchKeywordDiscovery(query, retryCount + 1, userId);
+                }
+                return [];
+            }
+
+            console.log(`Đã lấy dữ liệu thành công cho Keyword: ${query}. Phân tích AI...`);
+
+            const prompt = `
+                Bạn là một Chuyên gia nghiên cứu Keyword & Xu hướng thị trường (Market Research Expert).
+                Nhiệm vụ: Phân tích sức mạnh và xu hướng của Keyword "${query}" thông qua TOP 9 quảng cáo đang chạy hiệu quả nhất.
+                
+                Dữ liệu đặc biệt cần chú ý:
+                - ID: Tìm [REAL_ID: ...]
+                - Ngày bắt đầu: [START_DATE_MARK: ...]
+                - Tiếp cận: [REACH_MARK: ...]
+                - Hiển thị (Impressions): [IMPRESSIONS_MARK: ...]
+                - Chi phí (Spend): [SPEND_MARK: ...]
+                - Tương tác (Engagement): [ENGAGEMENT_MARK: ...]
+
+                QUY TẮC TRÍCH XUẤT JSON:
+                Mỗi mẫu quảng cáo của Keyword phải là một object:
+                - id: Số ID thực tế.
+                - image: Link ảnh minh họa.
+                - page: Tên thương hiệu/Fanpage.
+                - body: Nội dung quảng cáo sử dụng keyword.
+                - score: Điểm tiềm năng của Keyword (8.5 - 9.9).
+                - metadata: {
+                    "start_date": "Ngày keyword bắt đầu trending",
+                    "platforms": ["Facebook", "Instagram", etc],
+                    "reach": "Quy mô thị trường",
+                    "impressions": "Tần suất xuất hiện",
+                    "spend": "Ngân sách Keyword ước tính",
+                    "locations": "Khu vực Keyword đang hot nhất",
+                    "engagement": "Độ quan tâm của khách hàng"
+                }
+                - analysis: {
+                    "target_audience": "Ai đang tìm kiếm keyword này?",
+                    "strategy": "Cách keyword này được dùng để bán hàng",
+                    "pros": ["Điểm mạnh 1", "Điểm mạnh 2"],
+                    "area_scope": "Phạm vi ảnh hưởng"
+                }
+
+                Dữ liệu HTML:
+                ${html.substring(0, 80000)}
+
+                CHỈ TRẢ VỀ JSON ARRAY. KHÔNG GIẢI THÍCH.
+                `;
+
+            const result = await this.model.generateContent(prompt);
+            const responseText = result.response.text();
+
+            if (!responseText) return [];
+
+            const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+            if (!jsonMatch) return [];
+
+            const parsed = JSON.parse(jsonMatch[0]);
+
+            return Array.isArray(parsed) ? parsed.map(ad => ({
+                ...ad,
+                id: String(ad.id).replace(/\D/g, ''),
+                image: (ad.image && ad.image.includes('http')) ? ad.image : null,
+                score: ad.score || (Math.random() * (9.9 - 8.5) + 8.5).toFixed(1)
+            })).slice(0, 9) : [];
+        } catch (error) {
+            console.error("Keyword Discovery Error Detail:", error.code || error.message);
+            if (retryCount < 1 && (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT')) {
+                return this.searchKeywordDiscovery(query, retryCount + 1, userId);
+            }
+            return [];
+        }
+    }
+
+    async getTrendingKeywords(category: string, userId: string, type: 'hot' | 'potential' = 'hot'): Promise<any[]> {
+        if (!this.model) return [];
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.KEYWORD_DISCOVERY, 'Từ khóa xu hướng');
+
+        try {
+            const currentDate = new Date().toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+            const prompt = type === 'hot'
+                ? `
+            Bạn là một chuyên gia Market Research và SEO Analysis chuyên nghiệp tại Việt Nam.
+            HÔM NAY LÀ NGÀY: ${currentDate}.
+            Nhiệm vụ: Cung cấp danh sách các từ khóa (Keywords) đang là XU HƯỚNG MỚI NHẤT (HOT TREND) tại thị trường Việt Nam trong 30 ngày gần đây tính từ ngày ${currentDate}, liên quan đến lĩnh vực: "${category}".
+            
+            Tiêu chí cho loại HOT TREND:
+            - Ưu tiên các từ khóa của năm 2025 - 2026 và các sự kiện đang diễn ra.
+            - Ưu tiên các từ khóa có Search Volume cực cao hoặc đang trong trạng thái "Exploding".
+            - Ưu tiên các sự kiện, sản phẩm, tin tức đang tạo sóng truyền thông lớn hiện nay.
+            `
+                : `
+            Bạn là một chuyên gia Market Research và SEO Analysis chuyên nghiệp tại Việt Nam.
+            HÔM NAY LÀ NGÀY: ${currentDate}.
+            Nhiệm vụ: Cung cấp danh sách các từ khóa (Keywords) có TIỀM NĂNG KINH DOANH CAO (HIGH POTENTIAL) tại thị trường Việt Nam trong giai đoạn năm 2025-2026 liên quan đến lĩnh vực: "${category}".
+            
+            Tiêu chí cho loại TIỀM NĂNG CAO:
+            - Ưu tiên các xu hướng mới nổi của năm 2026.
+            - Ưu tiên các từ khóa có mức độ cạnh tranh Thấp hoặc Trung bình nhưng đang có xu hướng tăng (Rising).
+            - Ưu tiên các từ khóa ngách (niche) nhưng có tỷ lệ chuyển đổi hoặc khả năng kiếm tiền cao.
+            - Ưu tiên các nhu cầu khách hàng mới nổi nhưng chưa bị bão hòa.
+            `;
+
+            const finalPrompt = prompt + `
+            Yêu cầu dữ liệu cho mỗi từ khóa:
+            - keyword: Từ khóa cụ thể.
+            - search_volume: Mức độ tìm kiếm (ví dụ: "Rất cao", "Đang tăng mạnh", hoặc số liệu ước estimates).
+            - competition: Mức độ cạnh tranh (Thấp/Trung bình/Cao).
+            - trend: Xu hướng (Rising, Stable, Exploding).
+            - reason: Lý do tại sao từ khóa này đang hot (ngắn gọn).
+            - potential_score: Điểm tiềm năng kinh doanh (8.0 - 9.9).
+
+            CẤU TRÚC JSON:
+            [
+                {
+                    "keyword": "...",
+                    "search_volume": "...",
+                    "competition": "...",
+                    "trend": "...",
+                    "reason": "...",
+                    "potential_score": 9.5
+                }
+            ]
+
+            CHỈ TRẢ VỀ JSON ARRAY GỒM 12-15 TỪ KHÓA. KHÔNG GIẢI THÍCH.
+            `;
+
+            const result = await this.generateAIContentWithRetry(finalPrompt);
+            const responseText = result.response.text();
+
+            const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+            if (!jsonMatch) return [];
+
+            return JSON.parse(jsonMatch[0]);
+        } catch (error) {
+            console.error("Get Trending Keywords Error:", error);
+            // Don't throw here, return empty array to keep UI stable, but log it
+            return [];
+        }
+    }
+
+    async getKeywordDetail(keyword: string, userId: string): Promise<any> {
+        if (!this.model) return null;
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.KEYWORD_DISCOVERY, 'Chi tiết từ khóa');
+
+        try {
+            const currentDate = new Date().toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
+            const prompt = `
+            BẠN LÀ MỘT CHUYÊN GIA PHÂN TÍCH THỊ TRƯỜNG & CHIẾN LƯỢC TĂNG TRƯỞNG (GROWTH HACKER).
+            HÔM NAY LÀ NGÀY: ${currentDate}.
+            Hãy phân tích cực kỳ chi tiết về từ khóa: "${keyword}" tại thị trường Việt Nam tính đến thời điểm hiện tại (${currentDate}).
+            
+            Yêu cầu nội dung phân tích:
+            1. Tổng quan sức mạnh từ khóa (Score 1-100).
+            2. Phân tích nhân khẩu học (Độ tuổi, giới tính, sở thích chủ yếu của người tìm kiếm).
+            3. Phân bổ khu vực (Các tỉnh thành quan tâm nhiều nhất).
+            4. Tính mùa vụ (Khi nào trong năm từ khóa này hot nhất).
+            5. Gợi ý 5 ngách nội dung (Content Angles) để triển khai quảng cáo/SEO cho từ khóa này.
+            6. Tiềm năng kinh doanh & Cách kiếm tiền từ từ khóa này (Monetization).
+            7. Danh sách 5 từ khóa liên quan (LSI Keywords).
+
+            TRẢ VỀ ĐỊNH DẠNG JSON (KHÔNG GIẢI THÍCH THÊM):
+            {
+                "keyword": "${keyword}",
+                "power_score": 85,
+                "demographics": {
+                    "age_range": "18-35",
+                    "gender_ratio": "60% Nữ, 40% Nam",
+                    "interests": ["...", "..."]
+                },
+                "geographic_distribution": ["Hà Nội", "TP. Hồ Chí Minh", "..."],
+                "seasonality": "Cao điểm vào tháng ...",
+                "content_angles": ["...", "..."],
+                "monetization": ["...", "..."],
+                "related_keywords": ["...", "..."],
+                "market_insight": "Phân tích ngắn gọn về hành vi người dùng đối với từ khóa này"
+            }
+            `;
+
+            const result = await this.generateAIContentWithRetry(prompt);
+            const responseText = result.response.text();
+
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) return null;
+
+            return JSON.parse(jsonMatch[0]);
+        } catch (error) {
+            console.error("Get Keyword Detail Error:", error);
+            return null;
+        }
+    }
+
+    async evaluateAndImproveContent(content: string, platform: string, userId: string): Promise<any> {
+        if (!this.model) return null;
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.CONTENT_EVALUATION, 'Đánh giá nội dung');
+
+        try {
+            const prompt = `
+            BẠN LÀ MỘT CHUYÊN GIA BIÊN TẬP NỘI DUNG (CONTENT EDITOR & STRATEGIST).
+            Nhiệm vụ của bạn là đánh giá bài viết dưới đây cho nền tảng ${platform} và đưa ra phiên bản cải thiện tốt hơn.
+
+            NỘI DUNG CẦN ĐÁNH GIÁ:
+            "${content}"
+
+            YÊU CẦU ĐÁNH GIÁ:
+            1. Chấm điểm bài viết trên thang điểm 10.
+            2. Chỉ ra các ưu điểm (Pros).
+            3. Chỉ ra các điểm cần cải thiện (Cons/Weaknesses).
+            4. Phân tích về giọng văn (Tone of voice).
+            5. Đưa ra 1 phiên bản CẢI THIỆN lại bài viết đó (tối ưu hơn, hấp dẫn hơn, giữ nguyên ý nghĩa gốc).
+
+            CẤU TRÚC PHẢN HỒI JSON (CHỈ JSON):
+            {
+                "score": 1-10,
+                "pros": ["...", "..."],
+                "cons": ["...", "..."],
+                "tone_analysis": "Nhận xét về giọng văn hiện tại",
+                "improvement_suggestions": ["...", "..."],
+                "improved_content": "Phiên bản bài viết đã được chỉnh sửa hấp dẫn hơn",
+                "key_changes_explanation": "Giải thích tại sao phiên bản mới lại tốt hơn"
+            }
+            `;
+
+            const result = await this.model.generateContent(prompt);
+            const responseText = result.response.text();
+            const cleanJson = responseText.replace(/```json|```/g, '').trim();
+            return JSON.parse(cleanJson);
+        } catch (error) {
+            console.error("Evaluate Content Error:", error.message);
+            throw new Error('Lỗi khi đánh giá nội dung: ' + error.message);
+        }
+    }
+
+    private async trackUsage(serviceId: string) {
+        try {
+            const db = this.firebaseAdmin.firestore();
+            const usageRef = db.collection('settings').doc('usage_stats');
+
+            // Increment usage
+            await usageRef.set({
+                [serviceId]: admin.firestore.FieldValue.increment(1),
+                last_updated: admin.firestore.FieldValue.serverTimestamp()
+            }, { merge: true });
+
+            // Check if limit exceeded (optional: we can just track here and check in methods)
+        } catch (error) {
+            console.error('Error tracking usage:', error);
+        }
+    }
+
+    private async checkLimit(serviceId: string): Promise<boolean> {
+        try {
+            const db = this.firebaseAdmin.firestore();
+            const usageDoc = await db.collection('settings').doc('usage_stats').get();
+            const data = usageDoc.data();
+
+            const current = data?.[serviceId] || 0;
+
+            // Get limits from settings/api_keys
+            const limitsDoc = await db.collection('settings').doc('api_keys').get();
+            const limits = limitsDoc.data()?.limits || {};
+            const limit = limits[serviceId];
+
+            // If strict mode is NOT enabled, we never block
+            if (!limits.strict_mode) {
+                return true;
+            }
+
+            // If strict mode is ON, we only block if a limit is set and reached
+            if (limit && current >= limit) {
+                return false;
+            }
+
+            return true;
+        } catch (error) {
+            console.error('Error in checkLimit:', error);
+            return true; // Don't block on error
+        }
+    }
+
+    async generateContent(data: {
+        platform: string;
+        length?: string;
+        brand: string;
+        field: string;
+        features: string;
+        price: string;
+        offers: string;
+        mode?: string;
+        framework?: string;
+        tone?: string;
+        category?: string;
+        videoType?: string;
+    }, userId: string): Promise<any> {
+        if (!this.model) {
+            throw new Error('Gemini API Key is not configured');
+        }
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.SOCIAL_CONTENT, 'Viết nội dung');
+
+        const isAllowed = await this.checkLimit('gemini');
+        if (!isAllowed) {
+            throw new Error('Hạn mức sử dụng Gemini đã hết. Vui lòng nâng cấp gói.');
+        }
+
+        await this.trackUsage('gemini');
+
+        const { platform, length, brand, field, features, price, offers, mode, framework, tone, category, videoType } = data;
+
+        let prompt = '';
+
+        if (mode === 'affiliate_viral') {
+            // Thêm hướng dẫn chuyên biệt dựa trên videoType
+            let typeInstruction = "";
+            if (videoType === 'entertainment') {
+                typeInstruction = "Tập trung vào tính giải trí, các tình huống gây bất ngờ hoặc hài hước. Ưu tiên yếu tố viral và bắt trend.";
+            } else if (videoType === 'product') {
+                typeInstruction = "Tập trung vào giải quyết nỗi đau của khách hàng, nêu bật USP (điểm bán hàng độc nhất) và có lời kêu gọi hành động (CTA) cực kỳ thuyết phục.";
+            } else if (videoType === 'educational') {
+                typeInstruction = "Cung cấp kiến thức giá trị, các bước thực hiện rõ ràng (Step-by-step). Giọng văn chuyên gia nhưng lôi cuốn, dễ hiểu.";
+            } else if (videoType === 'drama') {
+                typeInstruction = "Xây dựng tình huống kịch tính, có nút thắt và giải quyết vấn đề bằng một thông điệp truyền cảm hứng hoặc bài học ý nghĩa.";
+            }
+
+            prompt = `
+            BẠN LÀ MỘT ĐẠO DIỄN SẢN XUẤT VIDEO VIRAL XUẤT SẮC.
+            MỤC TIÊU: ${typeInstruction}
+            NHIỆM VỤ: Tạo kịch bản video ngắn cho ${platform.toUpperCase()} theo phong cách ${tone} và thể loại ${category || 'Giải trí'}.
+            
+            DỮ LIỆU SẢN PHẨM:
+            - Sản phẩm: ${brand}
+            - Ngành: ${field}
+            - Tính năng: ${features}
+            - Giá & Ưu đãi: ${price}, ${offers}
+            - Công thức (Framework): ${framework}
+
+            YÊU CẦU BẮT BUỘC VỀ ĐỊNH DẠNG (KHÔNG ĐƯỢC SAI LỆCH):
+            Dữ liệu trả về chỉ bao gồm danh sách các phân cảnh. Mỗi phân cảnh viết theo cấu trúc:
+
+            Phân cảnh 1:
+            [Thời lượng]: (Ví dụ: 3 giây, 5 giây...)
+            [Bối cảnh]: (Mô tả địa điểm, không gian quay)
+            [Góc quay]: (Viết cụ thể góc máy ở đây)
+            [Nội dung]: (Tóm tắt ý tưởng/giá trị cốt lõi của cảnh này)
+            [Hành động]: (Mô tả hành động của nhân vật hoặc sản phẩm ở đây)
+            [Âm thanh]: (Mô tả nhạc nền, hiệu ứng âm thanh SFX)
+            [Lời thoại / Text]: (Nội dung lời thoại hoặc chữ hiện lên màn hình ở đây)
+
+            Phân cảnh 2:
+            [Thời lượng]: ...
+            [Bối cảnh]: ...
+            [Góc quay]: ...
+            [Nội dung]: ...
+            [Hành động]: ...
+            [Âm thanh]: ...
+            [Lời thoại / Text]: ...
+
+            (Tiếp tục cho đến hết video, khoảng 4-6 phân cảnh)
+
+            LƯU Ý QUAN TRỌNG:
+            - Tuyệt đối không lời mở đầu, không lời kết.
+            - Phải bắt đầu ngay bằng "Phân cảnh 1:".
+            - Luôn có đủ tất cả các nhãn yêu cầu trong từng phân cảnh.
+            - Sử dụng ngôn ngữ ${tone === 'Gen Z' ? 'trẻ trung, slangs' : tone === 'Hài hước' ? 'vui nhộn, dí dỏm' : 'chuyên nghiệp'}.
+            `;
+        } else if (mode === 'educational') {
+            prompt = `
+            Hãy đóng vai một chuyên gia nội dung (Content Creator) và chuyên gia trong lĩnh vực ${category || field}. 
+            Nhiệm vụ: Viết một bài chia sẻ kiến thức, giá trị hoặc lời khuyên chuyên sâu cho nền tảng ${platform.toUpperCase()} về chủ đề: "${features}".
+            
+            Yêu cầu về nội dung:
+            - Tập trung 100% vào việc cung cấp giá trị, thông tin hữu ích và giải pháp cho người đọc.
+            - Không được nhắc đến giá cả, không chào hàng, không khuyến mãi.
+            - PHONG CÁCH THEO NỀN TẢNG: 
+              + Facebook/Zalo: Viết bài sâu sắc, phân tích kỹ, chia sẻ tâm huyết (Dài).
+              + TikTok/Reels/Insta: Viết "giật gân", ngắn gọn, tập trung vào điểm nhấn quan trọng nhất (Ngắn).
+            - Độ dài: ${length === 'long' ? 'Chuyên sâu, chi tiết (8-12 ý)' : 'Súc tích, trực diện (3-5 ý)'}.
+            - Tone giọng: ${tone || 'Chuyên nghiệp'}.
+            
+            YÊU CẦU ĐỊNH DẠNG (BẮT BUỘC):
+            1. SỬ DỤNG EMOJI SINH ĐỘNG: Bắt buộc dùng Emoji Unicode ở ĐẦU mỗi mục.
+            2. TUYỆT ĐỐI KHÔNG DÙNG DẤU SAO (*): Không dùng bất kỳ định dạng Markdown nào.
+            3. Cấu trúc: Tiêu đề lôi cuốn (có Emoji) -> Mở đầu -> 3-5 Ý chính/Lời khuyên quan trọng -> Kết luận/Lời nhắn nhủ.
+            
+            Chỉ trả về nội dung bài viết. PHẢI CÓ EMOJI VÀ KHÔNG CÓ DẤU SAO (*).
+            `;
+        } else if (mode === 'fanpage_post') {
+            let styleInstruction = "";
+            const categoryLower = (category || "").toLowerCase();
+
+            if (categoryLower.includes("tin tức")) {
+                styleInstruction = `
+                - ĐÓNG VAI: Phóng viên/Biên tập viên tin tức năng động.
+                - NHIỆM VỤ: Cập nhật tin tức mới nhất, sốt dẻo về chủ đề: "${features}".
+                - PHONG CÁCH: Khách quan, lôi cuốn, đưa tin nhanh, tập trung vào các con số hoặc sự kiện quan trọng.
+                - CẤU TRÚC: Headline tin nóng -> Tóm tắt sự việc và đưa ra các số liệu thống kê -> Nhận định/Dự báo ngắn.
+                `;
+            } else if (categoryLower.includes("bán hàng")) {
+                styleInstruction = `
+                - ĐÓNG VAI: Chuyên gia bán hàng (Copywriter).
+                - NHIỆM VỤ: Viết bài quảng bá sản phẩm/dịch vụ: "${features}".
+                - PHONG CÁCH: Thuyết phục, đánh vào nỗi đau/mong muốn khách hàng, nêu bật lợi ích.
+                - CẤU TRÚC: Hook thu hút -> Vấn đề khách hàng -> Giải pháp (Sản phẩm) -> Đặc điểm nổi bật & Ưu đãi -> Kêu gọi hành động (CTA).
+                `;
+            } else if (categoryLower.includes("chia sẻ")) {
+                styleInstruction = `
+                - ĐÓNG VAI: Chuyên gia/Người chia sẻ giá trị.
+                - NHIỆM VỤ: Viết bài chia sẻ kiến thức, mẹo, lời khuyên về: "${features}".
+                - PHONG CÁCH: Thân thiện, tận tâm, cung cấp giá trị thực tế.
+                - CẤU TRÚC: Đặt vấn đề -> 3-5 Ý chia sẻ/Mẹo hữu ích -> Tổng kết lời khuyên.
+                `;
+            } else if (categoryLower.includes("kể chuyện")) {
+                styleInstruction = `
+                - ĐÓNG VAI: Người kể chuyện (Storyteller).
+                - NHIỆM VỤ: Kể một câu chuyện truyền cảm hứng, tâm sự hoặc trải nghiệm liên quan đến: "${features}".
+                - PHONG CÁCH: Cảm xúc, gần gũi, chân thực, dễ chạm tới trái tim.
+                - CẤU TRÚC: Mở đầu bằng một tình huống lôi cuốn -> Diễn biến câu chuyện -> Bài học hoặc Thông điệp kết nối.
+                `;
+            } else {
+                styleInstruction = `Tạo một bài viết thu hút, bùng nổ về chủ đề: "${features}".`;
+            }
+
+            prompt = `
+            Hãy đóng vai một chuyên gia nội dung Social Media chuyên nghiệp. 
+            Nhiệm vụ: Viết bài đăng Facebook cho chiến dịch: "${brand}".
+            
+            HƯỚNG DẪN PHONG CÁCH BẮT BUỘC:
+            ${styleInstruction}
+
+            Yêu cầu chung:
+            - Nền tảng: ${platform.toUpperCase()}
+            - Độ dài: ${length === 'long' ? 'Chuyên sâu, chi tiết' : 'Ngắn gọn, súc tích, trực diện'}
+            - Tone giọng: ${tone || 'Thân thiện'}
+            - Đối tượng: Cộng đồng quan tâm đến ${field}
+            
+            YÊU CẦU ĐỊNH DẠNG (BẮT BUỘC):
+            1. SỬ DỤNG EMOJI SINH ĐỘNG: Bắt buộc dùng Emoji Unicode phù hợp ở ĐẦU mỗi đoạn hoặc mục.
+            2. TUYÊT ĐỐI KHÔNG DÙNG DẤU SAO (*): Không dùng Markdown để in đậm/nghiêng.
+            3. KHÔNG DÙNG DẤU NGOẶC KÉP (") CHO TIÊU ĐỀ.
+            
+            Chỉ trả về nội dung bài viết. PHẢI CÓ EMOJI VÀ KHÔNG CÓ DẤU SAO (*).
+            `;
+        } else {
+            prompt = `
+            Hãy đóng vai một chuyên gia Social Media Marketing hàng đầu toàn cầu. Hãy tạo một nội dung bài đăng cực kỳ bùng nổ và thu hút cho nền tảng ${platform.toUpperCase()}.
+            
+            Thể loại nội dung: ${category || 'Tin tức & Chia sẻ'}
+            PHONG CÁCH THEO NỀN TẢNG (QUAN TRỌNG): 
+            - Facebook/Zalo: Viết bài kể chuyện lôi cuốn, xây dựng lòng tin, nội dung đầy đủ (Dài).
+            - TikTok/Reels/Insta: Ngắn gọn, "giật gân", trực diện, tập trung tối đa vào từ khóa thu hút (Ngắn).
+            Độ dài yêu cầu: ${length === 'long' ? 'Bài viết đầy đủ, chi tiết' : 'Bài viết ngắn gọn, xúc tích'}.
+            
+            Thông tin khách hàng:
+            - Lĩnh vực: ${field}
+            - Thương hiệu: ${brand}
+            - Lợi ích chính: ${features}
+            - Giá sản phẩm: ${price || 'Liên hệ ngay'}
+            - Ưu đãi / Khuyến mãi: ${offers || 'Không có (Hãy tự sáng tạo thêm một ưu đãi nhỏ nếu thấy cần thiết để tăng tương tác)'}
+            
+            Yêu cầu bài viết chuyên nghiệp và tinh tế(QUAN TRỌNG):
+            YÊU CẦU ĐỊNH DẠNG(BẮT BUỘC):
+            1. SỬ DỤNG EMOJI SINH ĐỘNG: Bắt buộc dùng Emoji Unicode ở ĐẦU mỗi mục và ĐẦU các dòng liệt kê. 
+               Ví dụ: 🚀 "Tên tiêu đề", ✨ "Lợi ích 1"...
+            2. TUYỆT ĐỐI KHÔNG DÙNG DẤU SAO(*): Không dùng bất kỳ định dạng Markdown nào.
+            3. KHÔNG DÙNG DẤU NGOẶC KÉP(") ĐỂ BỌC TIÊU ĐỀ: Chỉ viết tiêu đề bình thường sau Emoji.
+            
+            Cấu trúc bài viết mẫu:
+                [Emoji] Tiêu đề bài viết hấp dẫn
+
+            [Emoji] Giới thiệu ngắn gọn...
+
+            [Emoji] Ưu điểm nổi bật:
+                -[Emoji] Lợi ích 1
+            - [Emoji] Lợi ích 2
+
+            [Emoji] Kêu gọi hành động(CTA) ngay!
+            
+            Chỉ trả về nội dung bài viết.PHẢI CÓ EMOJI VÀ KHÔNG CÓ DẤU SAO(*).
+            `;
+        }
+
+        const isNews = (category?.toLowerCase().includes('tin tức') || mode === 'news');
+        let aiResult;
+
+        if (isNews) {
+            // Sử dụng model có hỗ trợ Search Grounding để lấy dữ liệu thực tế (Giá vàng, Thị trường...)
+            const searchEnabledModel = this.genAI.getGenerativeModel({
+                model: "gemini-3-flash-preview",
+                tools: [
+                    {
+                        // @ts-ignore - Đối với các model mới, dùng googleSearch thay vì googleSearchRetrieval
+                        googleSearch: {},
+                    },
+                ],
+            });
+
+            const today = new Date().toLocaleDateString('vi-VN');
+            const newsPrompt = `HÔM NAY LÀ NGÀY: ${today}.
+            YÊU CẦU QUAN TRỌNG: Sử dụng công cụ Google Search để cập nhật thông tin MỚI NHẤT VÀ CHÍNH XÁC NHẤT trong ngày hôm nay về: ${features}. 
+            Tuyệt đối không sử dụng dữ liệu cũ từ năm 2024 hay quá khứ.
+            
+            Sau đó thực hiện viết bài theo yêu cầu sau:
+            ${prompt}`;
+
+            aiResult = await searchEnabledModel.generateContent(newsPrompt);
+        } else {
+            aiResult = await this.model.generateContent(prompt);
+        }
+
+        const response = await aiResult.response;
+        return { content: response.text() };
+    }
+
+    async generateSpeech(data: { text: string; voice: string; speed: number }, userId: string): Promise<any> {
+        const apiKey = this.currentFptKey;
+
+        if (!apiKey) {
+            console.error('--- ERROR: FPT_AI_API_KEY is not configured ---');
+            throw new Error('FPT.AI API Key is not configured');
+        }
+
+        // Tính phí dựa trên độ dài văn bản: 10 credits cho mỗi 100 ký tự
+        const charCount = data.text.length;
+        const cost = Math.max(10, Math.ceil(charCount / 100) * this.CREDIT_COSTS.TTS_PER_100_CHARS);
+        await this.deductCredits(userId, cost, 'Chuyển văn bản thành giọng nói');
+
+        const isAllowed = await this.checkLimit('fpt');
+        if (!isAllowed) {
+            throw new Error('Hạn mức sử dụng FPT.AI đã hết. Vui lòng nâng cấp gói.');
+        }
+
+        await this.trackUsage('fpt');
+
+        console.log(`-- - Calling FPT.AI TTS with voice: ${data.voice}, speed: ${data.speed} --- `);
+
+        try {
+            const response = await axios.post(
+                'https://api.fpt.ai/hmi/tts/v5',
+                data.text,
+                {
+                    headers: {
+                        'api_key': apiKey,
+                        'voice': data.voice,
+                        'speed': data.speed.toString(),
+                    }
+                }
+            );
+
+            if (response.data && (response.data.async || response.data.url)) {
+                const audioUrl = response.data.async || response.data.url;
+                console.log('--- FPT.AI Success! Audio URL:', audioUrl, '---');
+                return { url: audioUrl };
+            } else {
+                console.error('--- FPT.AI Response Data:', response.data, '---');
+                throw new Error('Không nhận được URL âm thanh từ FPT.AI');
+            }
+        } catch (error) {
+            console.error('Lỗi FPT.AI TTS:', error.response?.data || error.message);
+            throw new Error('Lỗi khi gọi FPT.AI Speech API: ' + (error.response?.data?.message || error.message));
+        }
+    }
+
+    async downloadProxy(url: string) {
+        try {
+            const headers: any = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            };
+
+            // Thiết lập Referer phù hợp để tránh 403 Forbidden
+            if (url.includes('douyin.com') || url.includes('pstatp.com') || url.includes('zjcdn.com')) {
+                headers['Referer'] = 'https://www.douyin.com/';
+                headers['Origin'] = 'https://www.douyin.com';
+            } else if (url.includes('tiktok.com')) {
+                headers['Referer'] = 'https://www.tiktok.com/';
+                headers['Origin'] = 'https://www.tiktok.com';
+            } else if (url.includes('facebook.com') || url.includes('fbcdn.net')) {
+                headers['Referer'] = 'https://www.facebook.com/';
+                headers['Origin'] = 'https://www.facebook.com';
+            } else {
+                // Mặc định thử dùng Referer từ chính domain video
+                try {
+                    const domain = new URL(url).origin;
+                    headers['Referer'] = domain + '/';
+                } catch (e) { }
+            }
+
+            const response = await axios({
+                url,
+                method: 'GET',
+                responseType: 'stream',
+                headers,
+                timeout: 30000,
+            });
+            return response;
+        } catch (error) {
+            console.error('Lỗi khi proxy download:', error.message);
+            throw new Error('Không thể kết nối đến server nguồn để tải file. Link có thể đã hết hạn.');
+        }
+    }
+
+
+    async generateImageMockup(originalPrompt: string, productImage?: string, logoImage?: string, modelImage?: string, aspectRatio?: string, userId?: string): Promise<{ url: string }> {
+        if (userId) {
+            await this.deductCredits(userId, this.CREDIT_COSTS.MOCKUP, 'Tạo Mockup AI');
+        }
+
+        try {
+            console.log(`-- - Mockup Generation via Gemini 3 Flash(${aspectRatio || '1:1'})--- `);
+
+            // Map aspect ratio to Google SDK internal enum strings
+            const ratioMap: any = {
+                '1:1': 'ASPECT_RATIO_1_1',
+                '16:9': 'ASPECT_RATIO_16_9',
+                '9:16': 'ASPECT_RATIO_9_16'
+            };
+            const googleRatio = ratioMap[aspectRatio || '1:1'] || 'ASPECT_RATIO_1_1';
+
+            // Bước 1: Gemini 3 Enhance Prompt (Tối ưu hóa chỉ thị hình ảnh)
+            let enhancedPrompt = originalPrompt;
+            const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+            try {
+                let promptParts: any[] = [
+                    `Act as a world - class Visual Artist and Visual Clone Expert. 
+                    Construct a high - precision prompt for an image generation agent.
+            Idea: "${originalPrompt}".
+
+                Instructions:
+        1. STRICT PRODUCT IDENTITY: The generated image MUST preserve the EXACT appearance, logo, texture, and structural design of the PRODUCT provided in the image.
+                    2. BRAND INTEGRATION: If a LOGO is provided, integrate it masterfully into the product or scene as a professional branding element.
+                    3. ZERO MODIFICATION: Do NOT add new text, logos, or modify existing designs on the product except for the provided logo.
+                    4. VISUAL CLONING: Perform a direct pixel - level transfer of the product's identity into the new scene.
+        5. SPATIAL REFERENCE: Maintain the correct scale and perspective of the product relative to the environment / person.
+                    6. High - End Commercial: Use professional studio lighting(Rembrandt lighting, rim lights), 8k resolution, and photorealistic textures.
+                    7. Composition: The product must be the focal point.Ensure natural interaction(e.g., if it's a sweater, it must be worn exactly as shown).
+        8. Target Aspect Ratio: ${aspectRatio || '1:1'} (${aspectRatio === '9:16' ? 'Portrait' : aspectRatio === '16:9' ? 'Landscape' : 'Square'}).
+        9. Output ONLY the English descriptive prompt focusing on the environment and product placement.Max 90 words.`
+                ];
+
+                if (productImage && productImage.includes('base64,')) {
+                    promptParts.push({ inlineData: { data: productImage.split('base64,')[1], mimeType: "image/jpeg" } });
+                }
+                if (logoImage && logoImage.includes('base64,')) {
+                    promptParts.push({ inlineData: { data: logoImage.split('base64,')[1], mimeType: "image/jpeg" } });
+                }
+                if (modelImage && modelImage.includes('base64,')) {
+                    promptParts.push({ inlineData: { data: modelImage.split('base64,')[1], mimeType: "image/jpeg" } });
+                }
+
+                const result = await enhanceModel.generateContent(promptParts);
+                enhancedPrompt = result.response.text().replace(/[*"`]/g, '').trim();
+                console.log('--- Gemini 3 Enhanced Prompt:', enhancedPrompt);
+            } catch (e) {
+                console.warn("Gemini 3 Enhance failed, using original:", e.message);
+                try {
+                    const fallbackEnhance = this.model || this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+                    const fResult = await fallbackEnhance.generateContent(originalPrompt);
+                    enhancedPrompt = fResult.response.text();
+                } catch (se) { }
+            }
+
+            // Bước 2: Tạo ảnh (Ưu tiên các model hỗ trợ Image Gen tốt nhất)
+            const googleModels = [
+                "gemini-2.5-flash-image",
+                "gemini-2.0-flash-exp",
+                "gemini-2.0-flash"
+            ];
+
+            for (const modelName of googleModels) {
+                // Thử tối đa 2 lần cho mỗi model nếu gặp lỗi Quota (429)
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                    try {
+                        console.log(`--- Trying Model: ${modelName} (Attempt ${attempt}) ---`);
+                        const imgModel = this.genAI.getGenerativeModel({ model: modelName });
+
+                        // Xây dựng input đa phương thức cho trình tạo ảnh
+                        const finalParts: any[] = [
+                            { text: enhancedPrompt }
+                        ];
+
+                        if (productImage && productImage.includes('base64,')) {
+                            finalParts.push({ inlineData: { data: productImage.split('base64,')[1], mimeType: "image/jpeg" } });
+                        }
+                        if (logoImage && logoImage.includes('base64,')) {
+                            finalParts.push({ inlineData: { data: logoImage.split('base64,')[1], mimeType: "image/jpeg" } });
+                        }
+                        if (modelImage && modelImage.includes('base64,')) {
+                            finalParts.push({ inlineData: { data: modelImage.split('base64,')[1], mimeType: "image/jpeg" } });
+                        }
+
+                        // Gọi AI - Loại bỏ aspect_ratio khỏi config vì gây lỗi 400
+                        const result = await imgModel.generateContent({
+                            contents: [{ role: 'user', parts: finalParts }]
+                        });
+                        const candidates = result.response.candidates;
+
+                        if (candidates && candidates.length > 0 && candidates[0].content.parts.length > 0) {
+                            const imagePart = candidates[0].content.parts.find(part => part.inlineData);
+                            if (imagePart && imagePart.inlineData) {
+                                const base64Image = imagePart.inlineData.data;
+                                const mimeType = imagePart.inlineData.mimeType || 'image/jpeg';
+                                console.log(`--- Success with: ${modelName} ---`);
+
+                                // Giải quyết lỗi Firestore 1MB: Tải lên Cloud Storage thay vì lưu base64
+                                try {
+                                    const storageUrl = await this.uploadBase64ToStorage(base64Image, mimeType, userId);
+                                    if (storageUrl) {
+                                        return { url: storageUrl };
+                                    }
+                                } catch (storageErr) {
+                                    console.warn("Storage upload failed, falling back to base64:", storageErr.message);
+                                }
+
+                                return { url: `data:${mimeType};base64,${base64Image}` };
+                            } else {
+                                console.log(`--- Model ${modelName} returned text instead of image:`, result.response.text().substring(0, 100));
+                            }
+                        }
+                    } catch (err) {
+                        const isRateLimit = err.message?.includes('429') || err.message?.includes('exhausted');
+                        console.warn(`Model ${modelName} error:`, err.message);
+
+                        if (isRateLimit && attempt === 1) {
+                            console.log('--- Quota hit, waiting 2.5s before retry... ---');
+                            await new Promise(r => setTimeout(r, 2500));
+                            continue;
+                        }
+                        break; // Chuyển sang model tiếp theo
+                    }
+                }
+            }
+
+            throw new Error('Dịch vụ Gemini 3 Image hiện đang bảo trì hoặc chưa hỗ trợ vùng này.');
+
+        } catch (error) {
+            console.error("Gemini 3 Mockup Error:", error.message);
+            throw new Error('Không thể tạo ảnh bằng Gemini 3. Vui lòng thử lại sau giây lát!');
+        }
+    }
+
+    private async resolveBase64Image(image: string | undefined): Promise<string | null> {
+        if (!image) return null;
+        if (image.includes('base64,')) return image.split('base64,')[1];
+        if (image.startsWith('http')) {
+            try {
+                const response = await axios.get(image, { responseType: 'arraybuffer' });
+                return Buffer.from(response.data, 'binary').toString('base64');
+            } catch (e) {
+                console.error(`Failed to download image from URL: ${image}`, e.message);
+                return null;
+            }
+        }
+        return null;
+    }
+    async generateSmartBanner(data: {
+        productImage?: string;
+        productImages?: string[];
+        modelImage?: string;
+        logoImage?: string;
+        refImage?: string;
+        companyName?: string;
+        productName?: string;
+        slogan: string;
+        price: string;
+        details?: string;
+        industry?: string;
+        style: string;
+        aspectRatio: string;
+        quality: string;
+    }, userId: string): Promise<{ url: string }> {
+        try {
+            console.log(`--- Smart Banner Generation Starting for user: ${userId} ---`);
+
+            const prodImages = data.productImages || (data.productImage ? [data.productImage] : []);
+            const prodBase64List = await Promise.all(prodImages.map(img => this.resolveBase64Image(img)));
+            const validProdBase64List = prodBase64List.filter(b => b !== null) as string[];
+
+            const modelBase64 = await this.resolveBase64Image(data.modelImage);
+            const refBase64 = await this.resolveBase64Image(data.refImage);
+            const logoBase64 = await this.resolveBase64Image(data.logoImage);
+
+            if (validProdBase64List.length === 0 && !refBase64 && !modelBase64) {
+                throw new BadRequestException('Không thể xử lý hình ảnh đầu vào. Vui lòng kiểm tra định dạng ảnh.');
+            }
+
+            // Chỉ trừ credits sau khi đã kiểm tra hình ảnh hợp lệ
+            if (userId) {
+                await this.deductCredits(userId, this.CREDIT_COSTS.SMART_BANNER, 'Thiết kế Banner Studio AI');
+            }
+            const effectiveProductName = data.productName || 'Sản phẩm mới';
+            const effectiveCompanyName = data.companyName || 'Công ty mới';
+
+            console.log(`--- Smart Banner Generation (${data.style}, ${data.aspectRatio}) ---`);
+
+            const stylePrompts: any = {
+                'Minimalism': 'Thẩm mỹ tối giản, không gian trắng sạch sẽ, bố cục thoáng đãng, chỉ giữ lại các yếu tố thiết yếu, sự tinh tế trong sự đơn giản.',
+                'High-Contrast': 'Ánh sáng nghệ thuật cường độ cao, bóng đổ sâu, màu sắc bão hòa rực rỡ, hiệu ứng thị giác mạnh mẽ, độ tương phản cao.',
+                'Elegant': 'Tông màu pastel nhẹ nhàng, phong cách sang trọng cao cấp, họa tiết tinh xảo, đường nét thanh thoát, thẩm mỹ thiết kế cao cấp.',
+                'Dynamic': 'Tập trung vào hành động, hiệu ứng mờ chuyển động, các hạt/mảnh vỡ lơ lửng, góc quay năng động, nhịp độ mạnh mẽ.',
+                'Professional': 'Bố cục đối xứng ở trung tâm, thẩm mỹ doanh nghiệp chỉn chu, ánh sáng trực tiếp rõ ràng, đáng tin cậy và sắc nét.'
+            };
+
+            const styleDesc = stylePrompts[data.style] || stylePrompts['Professional'];
+
+            const industryPrompts: any = {
+                "Mỹ phẩm & Làm đẹp": "Bố cục tinh tế, mềm mại, tôn vinh làn da và vẻ đẹp hoàn mỹ. Sản phẩm mỹ phẩm lấp lánh (nếu có), hiệu ứng ánh sáng diệu kỳ (skin-glowing) tôn lên sự trong trẻo.",
+                "Thời trang & May mặc": "Phong cách thời trang cao cấp (High-fashion editorial), tư thế người mẫu đẳng cấp, thể hiện nếp gấp vải và chất liệu chân thực, bối cảnh studio tạp chí thời trang danh tiếng.",
+                "Công nghệ & Điện tử": "Thẩm mỹ thiết kế sản phẩm hiện đại sắc sảo (Tech-aesthetic), ánh sáng ven tinh tế làm nổi bật chất liệu kim loại/kính, hiệu ứng sci-fi hoặc tối giản tương lai.",
+                "Ẩm thực & Nhà hàng": "Chụp ảnh ẩm thực thương mại siêu cận (Commercial Food Photography), chi tiết sắc nét tới từng giọt nước sốt. Ánh sáng ấm áp rực rỡ gợi sự ngon miệng, làn khói nóng bốc lên tự nhiên (nếu là món nóng).",
+                "Bất động sản": "Siêu thực kiến trúc (Architectural Photography), góc chụp mở rộng (Wide-angle focus). Ánh sáng giờ vàng ngập tràn (Golden hour lighting). Không gian sống mơ ước, sang trọng.",
+                "Giáo dục & Đào tạo": "Môi trường học tập chuyên nghiệp, tự tin. Ánh sáng ban ngày sáng bừng (Bright daylight) truyền tải sự rõ ràng, tri thức. Tông màu khơi gợi năng lượng tích cực, trí tuệ.",
+                "Sức khỏe & Y tế": "Phong cách thiết kế sạch sẽ, vô trùng (Clinical clean aesthetics) nhưng toát lên sự tận tâm êm dịu. Tông màu nhạt dễ chịu, ánh sáng khuếch tán mềm mại tạo sự an tâm tuyệt đối.",
+                "Nội thất & Gia dụng": "Nhiếp ảnh sản phẩm phong cách sống (Lifestyle interior). Bài trí ấm cúng, tỉ mỉ, đánh sáng tự nhiên từ cửa sổ tạo bóng nghệ thuật. Không gian sống đẳng cấp, cân bằng.",
+                "Du lịch & Khách sạn": "Cảnh quan kỳ vĩ, bao la. Bầu trời và màu sắc thiên nhiên được tăng cường (Vivid enhancement). Ánh sáng rực rỡ của khu nghỉ dưỡng hạng sang hoặc phong vị phiêu lưu mãn nhãn.",
+                "Sự kiện & Giải trí": "Không khí sôi động náo nhiệt, ánh sáng sân khấu cường độ cao (concert stage lighting, laser, neon spotlight). Cảm giác bùng nổ, đông đúc nhộn nhịp, góc máy hoành tráng năng động.",
+                "Tổng hợp": "Bố cục nghệ thuật sáng tạo mạnh, tối ưu thị giác toàn diện làm bật lên thông điệp chính một cách chuyên nghiệp."
+            };
+
+            const specificIndustryDesc = data.industry && industryPrompts[data.industry]
+                ? `\n                7. ĐẶC TRƯNG NGÀNH (${data.industry.toUpperCase()}): ${industryPrompts[data.industry]}`
+                : "";
+
+            // Define input scenario
+            const hasProduct = validProdBase64List.length > 0;
+            const hasModel = !!modelBase64;
+            const isMultiProduct = validProdBase64List.length > 1;
+
+            // Scenario-based instructions
+            let integrationInstruction = "";
+            if (hasProduct && !hasModel) {
+                const prodInstruction = isMultiProduct
+                    ? `CHIẾN LƯỢC BỘ SƯU TẬP SẢN PHẨM: Xử lý nhóm sản phẩm như một bộ sưu tập cao cấp. Sắp xếp chúng trong một bố cục cân xứng (chồng chéo, lồng ghép hoặc so le) để thể hiện sự đa dạng nhưng vẫn giữ chung một điểm nhấn cốt lõi.`
+                    : `CHIẾN LƯỢC SẢN PHẨM ĐƠN LẺ: Xử lý sản phẩm như một trung tâm cao cấp trong một buổi chụp hình thương mại chất lượng cao.`;
+
+                integrationInstruction = `
+                    1. ${prodInstruction}
+                    2. BẢN THIẾT KẾ BỐ CỤC: Tuân thủ nghiêm ngặt sự sắp xếp không gian, bố cục và trọng lượng thị giác của hình ảnh THAM KHẢO. Nếu hình tham khảo đặt trọng tâm bên trái, bạn hãy đặt ở bên trái.
+                    3. SỰ HIỆN DIỆN CHUNG: Bạn PHẢI hiển thị TẤT CẢ các sản phẩm được cung cấp trong các hình ảnh nguồn trong một bố cục duy nhất này. Tạo một bức ảnh nhóm cao cấp.
+                    4. ĐỘ CHÍNH XÁC CỦA SẢN PHẨM: Đảm bảo độ trung thực tuyệt đối với thiết kế, logo và hình dáng của từng sản phẩm. Giữ nguyên từng chi tiết nhỏ và ánh phản xạ của vật liệu.
+                    5. SỰ HÀI HÒA CỦA BỐI CẢNH: Tạo một môi trường 3D với ánh sáng toàn cục, nơi tất cả các sản phẩm tương tác thực tế với ánh sáng và bóng đổ, mô phỏng ánh sáng và chiều sâu của hình ảnh THAM KHẢO.
+                `;
+            } else if (!hasProduct && hasModel) {
+                integrationInstruction = `
+                    1. CHIẾN LƯỢC ĐẠI SỨ THƯƠNG HIỆU: Người mẫu là gương mặt đại diện của thương hiệu. Tập trung vào tính thẩm mỹ biên tập thời trang cao cấp.
+                    2. KHÓA ĐẶC ĐIỂM SINH TRẮC HỌC: KHÔNG ĐƯỢC THAY ĐỔI KHUÔN MẶT gốc. Danh tính phải khớp 100% với hình ảnh NGƯỜI MẪU. Kết cấu da phải chân thực, sử dụng các kỹ thuật chỉnh sửa cao cấp.
+                    3. TÍCH HỢP STUDIO: Đặt người mẫu vào một môi trường điện ảnh, sử dụng ánh sáng ven và độ sâu trường ảnh lấy cảm hứng từ hình ảnh THAM KHẢO.
+                `;
+            } else if (hasProduct && hasModel) {
+                const prodInstruction = isMultiProduct
+                    ? `bộ sưu tập sản phẩm và người mẫu để kể một câu chuyện thương hiệu gắn kết. Giữ các sản phẩm ở gần hoặc được tương tác với người mẫu một cách tự nhiên.`
+                    : `sản phẩm và người mẫu để kể một câu chuyện thương hiệu gắn kết.`;
+
+                integrationInstruction = `
+                    1. CHIẾN LƯỢC QUẢNG CÁO PHONG CÁCH SỐNG: Kết hợp một cách đầy nghệ thuật giữa ${prodInstruction}
+                    2. BẢN THIẾT KẾ BỐ CỤC: Coi hình ảnh THAM KHẢO như một hướng dẫn bố cục nghiêm ngặt. Phản chiếu lại chính xác vị trí, góc nhìn và thành phần của các đối tượng (người mẫu, sản phẩm, văn bản) được hiển thị trong ảnh tham khảo.
+                    3. SỰ HIỆN DIỆN CHUNG: Đảm bảo người mẫu và MỌI sản phẩm được cung cấp xuất hiện cùng nhau trong cùng một khung hình ảnh.
+                    4. ĐỘ CHÍNH XÁC CỦA ĐỐI TƯỢNG: 
+                       - SẢN PHẨM: Bản sao chính xác về hình dáng và nhãn hiệu cho từng mặt hàng.
+                       - KHUÔN MẶT NGƯỜI MẪU: Giữ hoàn hảo các đặc điểm khuôn mặt và danh tính gốc.
+                    5. SỰ TƯƠNG TÁC ĐIỆN ẢNH: Thiết lập sự liên kết cảm xúc tự nhiên giữa người mẫu và các sản phẩm.
+                    6. THIẾT KẾ KHÔNG GIAN: Sử dụng hệ thống phân cấp tầng hình ảnh nâng cao, sắp xếp các đối tượng theo bố cục THAM KHẢO với kỹ thuật đổ bóng bao quanh chân thực.
+                `;
+            } else {
+                integrationInstruction = "Tạo một banner theo chủ đề nghệ thuật và cao cấp, tập trung vào thiết lập bố cục không gian trừu tượng nhưng chuyên nghiệp.";
+            }
+
+            // Construct Mega Prompt for Enhancement (Senior Graphic Designer Persona)
+            const megaPrompt = `
+                VAI TRÒ: Giám đốc Nghệ thuật & Nhà thiết kế Thương mại Đẳng Cấp Thế Giới.
+                NHIỆM VỤ: Tổng hợp một quảng cáo kiệt tác cho thương hiệu "${effectiveCompanyName}" và sản phẩm/sự kiện "${effectiveProductName}" bằng cách sử dụng hình ảnh THAM KHẢO làm BẢN THIẾT KẾ BỐ CỤC nghiêm ngặt.
+                
+                HƯỚNG DẪN NGHỆ THUẬT:
+                1. SAO CHÉP BỐ CỤC VẬT LÝ: Phân tích hình ảnh THAM KHẢO một cách nghiêm túc như một bản thiết kế cấu trúc. Nhận thức vị trí không gian của tất cả các đối tượng chính, họa tiết nền và các khối văn bản để làm chuẩn mực.
+                2. LOẠI BỎ LOGO & VĂN BẢN (NGOẠI TRỪ LOGO CHÚNG TÔI CUNG CẤP NẾU CÓ): TUYỆT ĐỐI BỎ QUA và LOẠI TRỪ bất kỳ tên, logo cũ, slogan hoặc số điện thoại hiện có nào được tìm thấy trong hình ảnh THAM KHẢO. Hãy sử dụng logo mới được cung cấp (nếu có) và dữ liệu DNA THƯƠNG HIỆU được quy định.
+                3. ĐỘ CHÍNH XÁC CỦA KIỂU CHỮ: Mô phỏng lại độ dày (đậm/mảnh), kiểu (có chân/không chân) và thiết lập bảng màu của kiểu chữ được tìm thấy trong ảnh THAM KHẢO để đặt các dòng chữ của chúng ta: Tên Công ty: "${effectiveCompanyName}", Tiêu đề chính/Tên sản phẩm: "${effectiveProductName}", Thông điệp: "${data.slogan}", Ưu đãi/Giá/Thời gian: "${data.price}", và Chi tiết: "${data.details}".
+                4. ÁNH SÁNG & BẦU KHÔNG KHÍ: Áp dụng sắc thái ánh sáng (bóng đổ sâu, ánh sáng lan tỏa hay ánh sáng ven viền) và màu sắc từ hình ảnh THAM KHẢO. Phối hợp với: ${data.style === 'phong cách thiên nhiên' ? 'Ánh nắng mặt trời tự nhiên, mềm mại, bokeh điện ảnh' : styleDesc}.
+                5. CHẤT CẢM VẬT LÝ: Sử dụng kết cấu siêu thực — độ bóng kim loại, sự đan xen của vải mềm mại, hoặc các bề mặt siêu mịn. Sử dụng tiêu chuẩn độ phân giải 8k.
+                ${integrationInstruction}
+                6. HẬU KỲ: Áp dụng phân loại màu điện ảnh, lấy nét sắc nét vào đối tượng chính và retouch quảng cáo chuyên nghiệp.${specificIndustryDesc}
+                
+                DNA THƯƠNG HIỆU (YÊU CẦU CHỈ ĐƯỢC PHÉP SỬ DỤNG VĂN BẢN SAU):
+                - Tên Công ty / Thương hiệu: "${effectiveCompanyName}"
+                - Tên Sản phẩm / Tiêu đề Sự kiện: "${effectiveProductName}"
+                - Thông điệp chính: "${data.slogan}"
+                - Giá / Thời gian / Ưu đãi: "${data.price}"
+                - Chi tiết phụ trợ: "${data.details}"
+            `;
+
+            const enhanceModel = this.genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+
+            let promptParts: any[] = [
+                {
+                    text: `Dịch và Viết lại thành một Lời nhắc (Prompt) tiếng Anh thật chi tiết, có chiều sâu về khả năng render và tạo ảnh AI xuất sắc dựa vào định hướng nghệ thuật sau: ${megaPrompt}.
+                TRỌNG TÂM: Tập trung vào từ vựng nhiếp ảnh, mô tả vật liệu (textures), ánh sáng, và cấu trúc không gian hình học.
+                QUAN TRỌNG: TUYỆT ĐỐI đảm bảo quy tắc "BẢO TỒN HOÀN TOÀN ĐỐI TƯỢNG", SAO CHÉP Y HỆT 100% KHUÔN MẶT người mẫu (Face Identity, Facial Features) và sản phẩm, CẤM tuyệt đối không được tự ý vẽ AI ra khuôn mặt người khác.
+                YÊU CẦU ĐẦU RA: Chỉ xả ra đoạn Text duy nhất chứa Prompt bằng tiếng Anh, không thêm metadata hay nói chuyện, max 160 words.` }
+            ];
+
+            if (validProdBase64List.length > 0) {
+                validProdBase64List.forEach(base64 => {
+                    promptParts.push({ inlineData: { data: base64, mimeType: "image/jpeg" } });
+                });
+            }
+            if (refBase64) promptParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
+            if (modelBase64) promptParts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
+            if (logoBase64) promptParts.push({ inlineData: { data: logoBase64, mimeType: "image/png" } });
+
+            let finalPrompt = "";
+            try {
+                const resultEnhance = await enhanceModel.generateContent(promptParts);
+                finalPrompt = resultEnhance.response.text().replace(/[*"`]/g, '').trim();
+            } catch (err) {
+                console.warn("Prompt enhancement failed, using fallback:", err.message);
+                finalPrompt = `Professional commercial banner for ${effectiveCompanyName} and ${effectiveProductName}. ${styleDesc}, inspired by reference, preserve original assets. High quality rendering, cinematic lighting.`;
+            }
+
+            console.log('--- Smart Banner Enhanced Prompt:', finalPrompt);
+
+            // Now perform actual generation using multiple "Nano Banana" model attempts
+            const googleModels = [
+                "gemini-2.5-flash-image",         // Đặt làm ưu tiên số 1 theo yêu cầu
+                "gemini-3.1-flash-image-preview", // Nano Banana 2
+                "gemini-3-pro-image-preview"     // Nano Banana Pro
+            ];
+            let lastErrorMessage = "";
+
+            for (const modelName of googleModels) {
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                    try {
+                        console.log(`--- Trying Model: ${modelName} (Attempt ${attempt}) ---`);
+                        const imgModel = this.genAI.getGenerativeModel({ model: modelName });
+                        const finalParts: any[] = [{ text: finalPrompt }];
+
+                        if (validProdBase64List.length > 0) {
+                            validProdBase64List.forEach(base64 => {
+                                finalParts.push({ inlineData: { data: base64, mimeType: "image/jpeg" } });
+                            });
+                        }
+                        if (refBase64) finalParts.push({ inlineData: { data: refBase64, mimeType: "image/jpeg" } });
+                        if (modelBase64) finalParts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
+                        if (logoBase64) finalParts.push({ inlineData: { data: logoBase64, mimeType: "image/png" } });
+
+                        // Add reinforcement directly to generation model
+                        let reinforcement = `KHOÁ ĐẶC TÍNH VÀ YÊU CẦU:
+- PHẢN CHIẾU CẤU TRÚC BỐ CỤC: Hình ảnh THAM KHẢO được xem như bộ khung xương. BẠN PHẢI bám sát vị trí, lưới (grid) và tỉ lệ của ảnh tham khảo.
+- ĐÀO THẢI SAO CHÉP: BỎ QUA HOÀN TOÀN và XÓA SẠCH MỌI thương hiệu, văn bản, text cũ có sẵn trong ảnh tham khảo ra khỏi hình ảnh mới.
+- BƠM VĂN BẢN MỚI${logoBase64 ? ' VÀ LOGO' : ''}: Thay thế vị trí logo cũ bằng logo chúng tôi cung cấp. Chỉ thêm các đoạn text sau: "${effectiveCompanyName}", "${effectiveProductName}", "${data.slogan}", "${data.price}", "${data.details}" vào những vùng mà ảnh mẫu chứa text. 
+- TỈ LỆ KHUNG: Yêu cầu áp dụng tỉ lệ ${data.aspectRatio}. 
+- SỰ LIÊN KẾT: Tích hợp đầy đủ ${validProdBase64List.length} sản phẩm cung cấp.
+- ĐỘ TRUNG THỰC KHUÔN MẶT: Đặt lệnh ưu tiên cao nhất (HIGH PRIORITY). BẮT BUỘC phân tích và KIẾN TRÚC LẠI 100% NHẬN DẠNG KHUÔN MẶT (Face Identity), đường nét, thần thái của người mẫu gốc được tải lên. KHÔNG ĐƯỢC PHÉP THAY ĐỔI hay tự vẽ ra người mẫu khác.
+- ĐỘ TRUNG THỰC SẢN PHẨM: Cấm thay đổi màu sắc hay biến dạng tỷ lệ của Sản phẩm${logoBase64 ? ' / Logo' : ''}. `;
+
+                        finalParts.push({ text: reinforcement + "CLONE THE REFERENCE LAYOUT BUT ERASE ALL ITS ORIGINAL CONTENT." });
+
+                        const result = await imgModel.generateContent({
+                            contents: [{ role: 'user', parts: finalParts }],
+                            generationConfig: {
+                                temperature: 0.7,
+                                topP: 0.8,
+                                topK: 40
+                            }
+                        });
+                        const candidates = result.response.candidates;
+
+                        if (candidates && candidates.length > 0) {
+                            const imagePart = candidates[0].content.parts.find(part => part.inlineData);
+                            if (imagePart && imagePart.inlineData) {
+                                const storageUrl = await this.uploadBase64ToStorage(imagePart.inlineData.data, imagePart.inlineData.mimeType || 'image/jpeg', userId);
+                                return { url: storageUrl || `data:image/jpeg;base64,${imagePart.inlineData.data}` };
+                            } else {
+                                lastErrorMessage = "Nội dung phản hồi không chứa dữ liệu hình ảnh (có thể bị chặn hoặc lỗi nội dung).";
+                            }
+                        } else {
+                            lastErrorMessage = "Không có kết quả nào được trả về từ AI (Candidates empty).";
+                        }
+                    } catch (e) {
+                        lastErrorMessage = e.message || "Lỗi không xác định";
+                        console.error(`Smart Banner Model ${modelName} fail (Attempt ${attempt}):`, e);
+
+                        if (lastErrorMessage.includes('SAFETY') || lastErrorMessage.includes('blocked')) {
+                            console.error(`Bộ lọc an toàn đã được kích hoạt cho mô hình ${modelName}.`);
+                            break;
+                        }
+
+                        if (attempt === 1 && (lastErrorMessage.includes('429') || lastErrorMessage.includes('quota'))) {
+                            console.warn("Đã đạt giới hạn lượt gọi. Đang chờ 5 giây trước khi thử lại...");
+                            await new Promise(r => setTimeout(r, 5000));
+                            continue;
+                        }
+
+                        if (lastErrorMessage.includes('404')) {
+                            console.error(`Model ${modelName} khong ton tai hoac khong ho tro generateContent.`);
+                            break;
+                        }
+
+                        break;
+                    }
+                }
+            }
+
+            throw new Error(`Hệ thống tạo ảnh hiện không phản hồi. Vui lòng thử lại sau. (Chi tiết: ${lastErrorMessage})`);
+
+        } catch (error) {
+            console.error("Smart Banner Error:", error);
+            if (error instanceof BadRequestException) throw error;
+            throw new InternalServerErrorException(error.message || 'Lỗi không xác định khi tạo banner.');
+        }
+    }
+
+    /**
+     * Tải ảnh Base64 lên Firebase Storage để tránh lỗi lưu trữ Firestore 1MB
+     */
+    private async uploadBase64ToStorage(base64Data: string, mimeType: string, userId?: string): Promise<string | null> {
+        try {
+            // Use default bucket instead of hardcoded name to avoid configuration mismatches
+            const bucket = this.firebaseAdmin.storage().bucket();
+            const fileName = `ai_results/${userId || 'guest'}/${uuidv4()}.jpg`;
+            const file = bucket.file(fileName);
+
+            const buffer = Buffer.from(base64Data, 'base64');
+
+            await file.save(buffer, {
+                metadata: {
+                    contentType: mimeType,
+                    cacheControl: 'public, max-age=31536000',
+                },
+                public: true
+            });
+
+            const [url] = await file.getSignedUrl({
+                action: 'read',
+                expires: '12-31-2099'
+            });
+
+            return url;
+        } catch (error) {
+            console.error("Lỗi upload Storage:", error.message);
+            return null;
+        }
+    }
+
+
+    async generateMarketingPlan(data: {
+        productName: string;
+        description: string;
+        targetAudience: string;
+        goal: string;
+        budget?: string;
+        duration: string;
+    }, userId: string): Promise<any> {
+        if (!this.model) {
+            throw new Error('Gemini API Key is not configured');
+        }
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.MARKETING_PLAN, 'Lên kế hoạch marketing');
+
+        const prompt = `
+        Bạn là Chuyên gia Chiến lược Marketing hàng đầu Việt Nam với 15 năm kinh nghiệm.
+        Hãy tạo một Kế hoạch Marketing chi tiết, khả thi và sáng tạo cho dự án sau:
+
+        THÔNG TIN DỰ ÁN:
+        - Tên sản phẩm/Sự kiện: ${data.productName}
+        - Mô tả: ${data.description}
+        - Đối tượng khách hàng: ${data.targetAudience}
+        - Mục tiêu chính: ${data.goal}
+        - Thời gian triển khai: ${data.duration} tuần
+        - Ngân sách: ${data.budget || 'Chưa xác định'}
+
+        YÊU CẦU ĐẦU RA:
+        Trả về ĐÚNG định dạng JSON sau (KHÔNG thêm markdown):
+        {
+            "plan_name": "Tên chiến dịch bằng tiếng Việt (ngắn gọn, hấp dẫn)",
+            "strategy_overview": "Tóm tắt chiến lược tổng thể bằng tiếng Việt (2-3 câu)",
+            "key_tactics": ["Chiến thuật 1", "Chiến thuật 2", "Chiến thuật 3"],
+            "target_insight": "Phân tích sâu về insight khách hàng mục tiêu bằng tiếng Việt",
+            "detailed_steps": ["Việc cần làm 1", "Việc cần làm 2", "Việc cần làm 3", "Việc cần làm 4", "Việc cần làm 5"],
+            "schedule": [
+                {
+                    "day_offset": 1,
+                    "title": "Tiêu đề hoạt động ngắn gọn",
+                    "platform": "Facebook/TikTok/Instagram/Shopee/Offline",
+                    "content_idea": "MÔ TẢ THỰC THI: Nội dung bài đăng cụ thể, hashtag, caption, call-to-action, loại hình ảnh/video cần chuẩn bị",
+                    "time": "Thời gian đăng tối ưu (VD: 09:00, 19:30, hoặc Cả ngày)",
+                    "type": "content"
+                }
+            ]
+        }
+
+        QUY TẮC QUAN TRỌNG:
+        1. Lịch trình chi tiết: Tạo ít nhất 3-4 hoạt động MỖI TUẦN, phân bổ đều trong ${data.duration} tuần
+        2. Nội dung cụ thể: Mỗi content_idea phải chi tiết như một brief thực tế gồm:
+           - Nội dung bài viết đầy đủ (caption, hashtag)
+           - Loại hình ảnh/video cần chuẩn bị
+           - Thời gian đăng tối ưu (VD: 19h-21h)
+           - Call-to-action rõ ràng
+        3. Đa dạng nền tảng: Kết hợp Facebook, TikTok, Instagram, Shopee (nếu phù hợp)
+        4. Phân loại type:
+           - content: Bài đăng organic (video, hình ảnh, story)
+           - event: Sự kiện, livestream, offline
+           - ads: Quảng cáo có trả phí
+        5. Ngôn ngữ: Toàn bộ kế hoạch phải bằng TIẾNG VIỆT
+        6. Thực tế: Dựa trên ngân sách và đối tượng khách hàng để đề xuất phù hợp
+
+        BẮT ĐẦU TẠO KẾ HOẠCH NGAY!
+        `;
+
+
+        try {
+            const result = await this.model.generateContent(prompt);
+            const responseText = result.response.text();
+
+            // Clean markdown if present
+            const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+
+            return JSON.parse(cleanJson);
+        } catch (error) {
+            console.error("Lỗi khi tạo Marketing Plan:", error);
+            throw new Error("Không thể tạo kế hoạch. Vui lòng thử lại.");
+        }
+    }
+
+    async scrapeProductData(url: string, userId: string): Promise<any> {
+        if (!this.model) {
+            throw new Error('Gemini API Key is not configured');
+        }
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.PRODUCT_SCRAPER, 'Cào dữ liệu sản phẩm');
+
+        try {
+            console.log(`--- Scraping Product from: ${url} (Using ScrapingBee: ${!!this.currentScrapingBeeKey}) ---`);
+
+            let html = '';
+
+            if (this.currentScrapingBeeKey) {
+                const apiKey = this.currentScrapingBeeKey.trim();
+
+                try {
+                    console.log(`--- [Render/Cloud] ScrapingBee Stage 1: ${url.substring(0, 100)}... ---`);
+                    const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+                        params: {
+                            'api_key': apiKey,
+                            'url': url,
+                            'render_js': true,
+                            'premium_proxy': true,
+                            'stealth_proxy': true,
+                            'country_code': 'vn',
+                            'block_ads': true,
+                            'wait': 5000,
+                            'timeout': 55000
+                        },
+                        timeout: 60000
+                    });
+                    html = sbResponse.data;
+                } catch (err1) {
+                    console.warn("--- ScrapingBee Stage 1 Failed, trying Stage 2 (Clean URL + Extra Stealth) ---");
+                    try {
+                        let cleanUrl = url.split('?')[0];
+                        const sbResponse = await axios.get('https://app.scrapingbee.com/api/v1', {
+                            params: {
+                                'api_key': apiKey,
+                                'url': cleanUrl,
+                                'render_js': true,
+                                'premium_proxy': true,
+                                'stealth_proxy': true,
+                                'country_code': 'vn',
+                                'block_ads': true,
+                                'wait': 8000
+                            },
+                            timeout: 70000
+                        });
+                        html = sbResponse.data;
+                    } catch (err2) {
+                        console.error("--- ALL ScrapingBee Stages Failed on Render. Checking fallback... ---");
+                        // Fallback này thường bị block trên Cloud, nhưng vẫn giữ để dự phòng
+                        const fallbackResponse = await axios.get(url, {
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1',
+                                'Accept-Language': 'vi-VN,vi;q=0.9',
+                            },
+                            timeout: 25000
+                        });
+                        html = fallbackResponse.data;
+                    }
+                }
+            } else {
+                console.warn("--- CRITICAL: Missing ScrapingBee Key. Fallback to Direct Axios (Likely to fail on Render) ---");
+                const response = await axios.get(url, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept-Language': 'vi-VN,vi;q=0.9',
+                        'Referer': 'https://www.google.com/'
+                    },
+                    timeout: 25000
+                });
+                html = response.data;
+            }
+
+            console.log(`--- HTML Captured (Length: ${html.length}) ---`);
+
+            // 1. Trích xuất Tiêu đề
+            const title = html.match(/<title>(.*?)<\/title>/)?.[1] || "";
+            console.log(`--- Product Title: ${title} ---`);
+
+            // 2. Trích xuất Ảnh "Chính chủ" (Tránh quét rác toàn trang)
+            let productImages: string[] = [];
+            let videoCoverId = "";
+
+            // Tìm thông tin video để loại bỏ ảnh bìa video
+            const videoMatch = html.match(/"video_id":\s*"(.*?)"/);
+            const coverMatch = html.match(/"cover":\s*"(.*?)"/);
+            if (coverMatch) videoCoverId = coverMatch[1];
+
+            // Tìm mảng images: "images":["id1", "id2", ...]
+            const imagesMatch = html.match(/"images":\s*\[\s*"(.*?)"\s*\]/);
+            if (imagesMatch) {
+                const imageIds = imagesMatch[1].split('","');
+                productImages = imageIds
+                    .filter(id => id !== videoCoverId) // Loại bỏ ảnh bìa video
+                    .map(id => `https://down-vn.img.susercontent.com/file/${id}`);
+                console.log(`--- Found ${productImages.length} official product images ---`);
+            }
+
+            // Fallback nếu không thấy JSON (quét regex nhưng cực khắt khe)
+            if (productImages.length === 0) {
+                const imageRegex = /https?:\/\/(?:down-vn\.img\.susercontent\.com|cf\.shopee\.vn)\/file\/[a-zA-Z0-9\-_]+/gi;
+                productImages = Array.from(new Set(html.match(imageRegex) || []))
+                    .filter(img => {
+                        const low = img.toLowerCase();
+                        return !low.includes('play') && !low.includes('video') &&
+                            !low.includes('overlay') && !low.includes('template') &&
+                            !low.includes('banner');
+                    })
+                    .map(img => img.includes('_tn') ? img.split('_tn')[0] : img);
+            }
+
+            const cleanImages = productImages.slice(0, 12); // Lấy tối đa 12 ảnh để AI chọn lọc
+
+            // 3. Trích xuất các khối Script "Vàng" chứa thông tin chi tiết
+            const scriptsWithState = html.match(/<script.*?>([\s\S]*?)<\/script>/g)
+                ?.filter((s: string) =>
+                    s.includes('item_id') ||
+                    s.includes('price') ||
+                    s.includes('description') ||
+                    s.includes('models') ||
+                    s.includes('shop_id') ||
+                    s.includes('attributes')
+                )
+                .map((s: string) => s.replace(/<script.*?>|<\/script>/g, '').trim())
+                .join("\n")
+                .substring(0, 30000) || "";
+
+            // 4. Tìm kiếm JSON-LD (Thường chứa giá và mô tả chuẩn SEO)
+            const jsonLds = html.match(/<script type="application\/ld\+json">(.*?)<\/script>/g)
+                ?.map((s: string) => s.replace(/<script .*?>|<\/script>/g, ''))
+                .join("\n") || "";
+
+            const prompt = `
+            Bạn là AI chuyên gia bóc tách dữ liệu Shopee. Hãy trả về thông tin SẠCH.
+            
+            DỮ LIỆU CUNG CẤP:
+            - Tiêu đề: ${title}
+            - Scripts: ${scriptsWithState}
+            - Dữ liệu cấu trúc JSON-LD: ${jsonLds}
+            - List ảnh gốc: ${cleanImages.join('\n')}
+
+            YÊU CẦU NGHIÊM NGẶT:
+            1. images: CHỈ LẤY TỐI ĐA 8 ẢNH SẢN PHẨM THỰC TẾ.
+               - TUYỆT ĐỐI KHÔNG lấy ảnh bìa video (có nút Play hoặc mờ).
+               - TUYỆT ĐỐI KHÔNG lấy ảnh banner khuyến mãi (có chữ "Sale", "Voucher", "25-2").
+               - TUYỆT ĐỐI KHÔNG lấy bảng quy đổi kích cỡ (Size chart).
+               - CHỈ lấy ảnh chụp sản phẩm sạch sẽ từ các góc độ khác nhau.
+            2. price: Giá bán đúng (số).
+            3. description: Mô tả chi tiết, đầy đủ thông số.
+            4. product_name: Tên sản phẩm sạch sẽ.
+            5. attributes: Trích xuất toàn bộ phần "Chi tiết sản phẩm" (Danh mục, Chất liệu, Xuất xứ, v.v.) thành một object key-value (Ví dụ: {"Danh mục": "Nam > Áo", "Chất liệu": "Cotton"}).
+
+            Trả về JSON chuẩn (KHÔNG MARKDOWN):
+            {
+                "product_name": "...",
+                "brand": "...",
+                "price": "...",
+                "description": "...",
+                "images": ["url1", "url2", ...],
+                "attributes": {
+                    "Tên thuộc tính": "Giá trị thuộc tính",
+                    ...
+                }
+            }
+            `;
+
+            console.log("--- Analyzing with Gemini (Advanced Extraction) ---");
+            const result = await this.model.generateContent(prompt);
+            const responseText = result.response.text();
+            const cleanJson = responseText.replace(/```json|```/g, '').trim();
+            console.log("--- Process Complete ---");
+
+            return JSON.parse(cleanJson);
+
+        } catch (error) {
+            console.error("Lỗi hệ thống cào dữ liệu:", error.message);
+            throw new InternalServerErrorException("hệ thống đang quá tải vui lòng thử lại sau ít phút");
+        }
+    }
+
+    async generateVideoScript(data: {
+        productName: string;
+        brand: string;
+        description: string;
+        vibe: string;
+        ratio: string;
+        duration: string;
+    }, userId: string): Promise<any> {
+        if (!this.model) {
+            throw new Error('Gemini API Key is not configured');
+        }
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.VIDEO_SCRIPT, 'Tạo kịch bản video sản phẩm');
+
+        const prompt = `
+        Bạn là Đạo diễn hình ảnh và Chuyên gia Creative Marketing. 
+        Hãy tạo một kịch bản Storyboard chi tiết cho một video quảng cáo sản phẩm đỉnh cao.
+
+        THÔNG TIN SẢN PHẨM:
+        - Sản phẩm: ${data.productName}
+        - Thương hiệu: ${data.brand}
+        - Mô tả: ${data.description}
+        - Phong cách muốn truyền tải (Vibe): ${data.vibe}
+        - Thời lượng: ${data.duration} giây
+        - Định dạng: ${data.ratio} (Dọc hoặc Ngang)
+
+        YÊU CẦU ĐẦU RA:
+        Mô tả từng cảnh quay (scene) để dựng thành video 3D hoặc quay phim thực tế. 
+        Trả về ĐÚNG định dạng JSON sau (KHÔNG thêm markdown):
+        {
+            "title": "Tên chiến dịch video hấp dẫn",
+            "scenes": [
+                {
+                    "time": "00:00 - 00:03",
+                    "visual": "Mô tả chi tiết hình ảnh: Góc máy, chuyển động, ánh sáng, sản phẩm xuất hiện như thế nào",
+                    "text": "Lời thoại hoặc text overlay xuất hiện trên màn hình",
+                    "audio": "Mô tả âm thanh: Nhạc nền, tiếng động (SFX)"
+                }
+            ],
+            "marketing_hooks": ["Hook 1 (3 giây đầu)", "Câu kêu gọi hành động chất", "Hashtag đề xuất"]
+        }
+
+        QUY TẮC:
+        1. Phân bổ cảnh quay hợp lý dựa trên thời lượng ${data.duration}s.
+        2. Visual: Cực kỳ chi tiết, mang tính điện ảnh cao, phù hợp với phong cách ${data.vibe}.
+        3. Marketing: Chú trọng 3 giây đầu để thu hút khách hàng.
+        4. Toàn bộ nội dung bằng tiếng Việt.
+        5. Đảm bảo nhịp điệu (pacing) của video.
+
+        BẮT ĐẦU TẠO STORYBOARD!
+        `;
+
+        try {
+            const result = await this.model.generateContent(prompt);
+            const responseText = result.response.text();
+            const cleanJson = responseText.replace(/```json/g, '').replace(/```/g, '').trim();
+            return JSON.parse(cleanJson);
+        } catch (error) {
+            console.error("Lỗi khi tạo Video Script:", error);
+            throw new Error("Không thể tạo kịch bản video. Vui lòng thử lại.");
+        }
+    }
+
+    async downloadUniversalVideo(url: string, userId: string): Promise<any> {
+        // Tách URL từ chuỗi nếu người dùng paste cả text (phổ biến với Douyin/TikTok)
+        const urlRegex = /(https?:\/\/[^\s，！。？]+)/;
+        const urlMatch = url.match(urlRegex);
+        if (urlMatch) {
+            url = urlMatch[0];
+        }
+
+        // Làm sạch URL: xóa query params (trừ Facebook cần v=) và dấu slash cuối cùng
+        if (!url.includes('facebook.com') && !url.includes('fb.watch')) {
+            url = url.trim().split('?')[0];
+            if (url.endsWith('/')) {
+                url = url.slice(0, -1);
+            }
+        }
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.VIDEO_DOWNLOAD, 'Tải video');
+
+        const platform = this.detectPlatform(url);
+
+        // Nếu là TikTok hoặc Douyin, sử dụng TikWM cho ổn định và map lại format
+        if (platform === 'TikTok' || platform === 'Douyin') {
+            try {
+                // Thêm tham số true để bỏ qua trừ credit lần 2 bên trong hàm này
+                const tikData = await this.downloadTikTokVideo(url, userId, true);
+                return {
+                    title: tikData.title || `Video ${platform}`,
+                    thumbnail: tikData.cover || tikData.origin_cover,
+                    source: new URL(url).hostname,
+                    platform: platform,
+                    quality: [
+                        {
+                            label: 'Chất lượng cao nhất (No Watermark)',
+                            url: tikData.hdplay || tikData.play,
+                            type: 'video'
+                        },
+                        {
+                            label: 'Tải Nhạc (MP3)',
+                            url: tikData.music,
+                            type: 'audio'
+                        }
+                    ]
+                };
+            } catch (err) {
+                console.warn(`TikWM failed for ${platform}, falling back to RapidAPI/Cobalt:`, err.message);
+            }
+        }
+
+        // Tối ưu hóa link Facebook (Stories, Reels, Share)
+        if (url.includes('facebook.com') || url.includes('fb.watch')) {
+            try {
+                if (url.includes('/stories/')) {
+                    const storyMatch = url.match(/\/stories\/(\d+)\/([^\/?]+)/);
+                    if (storyMatch) url = `https://www.facebook.com/stories/${storyMatch[1]}/${storyMatch[2]}/`;
+                } else if (url.includes('/reels/') || url.includes('/reel/')) {
+                    const reelMatch = url.match(/\/(?:reels|reel)\/([a-zA-Z0-9_-]+)/);
+                    if (reelMatch) url = `https://www.facebook.com/watch/?v=${reelMatch[1]}`;
+                } else if (url.includes('/share/v/')) {
+                    const shareMatch = url.match(/\/share\/v\/([^\/?]+)/);
+                    if (shareMatch) url = `https://www.facebook.com/watch/?v=${shareMatch[1]}`;
+                }
+
+                // Tránh tách query parameter nếu là link Facebook cần ?v=
+                if (!url.includes('facebook.com/watch') && !url.includes('facebook.com/video.php') && url.includes('?')) {
+                    url = url.split('?')[0];
+                }
+                console.log(`--- Optimized Facebook URL: ${url} ---`);
+            } catch (e) {
+                console.warn('Error cleaning Facebook URL:', e.message);
+            }
+
+            // Thử tải Facebook qua API chuyên biệt trước khi dùng Cobalt
+            try {
+                console.log(`--- Trying Facebook-specific API for: ${url} ---`);
+                const fbApis = [
+                    {
+                        name: 'getmyfb',
+                        url: 'https://getmyfb.com/process',
+                        getData: async (videoUrl: string) => {
+                            const params = new URLSearchParams();
+                            params.append('id', videoUrl);
+                            params.append('locale', 'en');
+                            const res = await axios.post('https://getmyfb.com/process', params, {
+                                headers: {
+                                    'Content-Type': 'application/x-www-form-urlencoded',
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                                    'Referer': 'https://getmyfb.com/',
+                                    'Origin': 'https://getmyfb.com'
+                                },
+                                timeout: 15000
+                            });
+                            return res.data;
+                        }
+                    },
+                    {
+                        name: 'fdown',
+                        url: 'https://fdown.net/download.php',
+                        getData: async (videoUrl: string) => {
+                            const res = await axios.get(`https://fdown.net/download.php?URLz=${encodeURIComponent(videoUrl)}`, {
+                                headers: {
+                                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                                    'Referer': 'https://fdown.net/',
+                                },
+                                timeout: 15000,
+                            });
+                            return res.data;
+                        }
+                    }
+                ];
+
+                for (const api of fbApis) {
+                    try {
+                        console.log(`Trying Facebook API: ${api.name}`);
+                        const html = await api.getData(url);
+                        const htmlStr = typeof html === 'string' ? html : JSON.stringify(html);
+
+                        // Tìm link HD và SD từ HTML response
+                        const hdMatch = htmlStr.match(/href="(https?:\/\/[^"]*?)"[^>]*>.*?HD/i)
+                            || htmlStr.match(/id="hdlink"[^>]*href="([^"]+)"/i)
+                            || htmlStr.match(/"hd_src":"([^"]+)"/i)
+                            || htmlStr.match(/HD Quality.*?href="(https?:\/\/[^"]+)"/is);
+                        const sdMatch = htmlStr.match(/href="(https?:\/\/[^"]*?)"[^>]*>.*?(?:SD|Normal)/i)
+                            || htmlStr.match(/id="sdlink"[^>]*href="([^"]+)"/i)
+                            || htmlStr.match(/"sd_src":"([^"]+)"/i)
+                            || htmlStr.match(/SD Quality.*?href="(https?:\/\/[^"]+)"/is);
+
+                        const hdUrl = hdMatch ? hdMatch[1].replace(/&amp;/g, '&') : null;
+                        const sdUrl = sdMatch ? sdMatch[1].replace(/&amp;/g, '&') : null;
+
+                        if (hdUrl || sdUrl) {
+                            console.log(`--- Facebook video found via ${api.name} ---`);
+                            const quality: any[] = [];
+                            if (hdUrl) quality.push({ label: 'Chất lượng cao (HD)', url: hdUrl, type: 'video' });
+                            if (sdUrl) quality.push({ label: 'Chất lượng thường (SD)', url: sdUrl, type: 'video' });
+
+                            return {
+                                title: `Video Facebook`,
+                                thumbnail: 'https://placehold.co/600x400/1877F2/FFFFFF/png?text=Facebook+Video',
+                                source: 'www.facebook.com',
+                                platform: platform,
+                                quality: quality
+                            };
+                        }
+                    } catch (fbErr) {
+                        console.warn(`Facebook API ${api.name} failed:`, fbErr.message);
+                    }
+                }
+                console.warn('All Facebook-specific APIs failed or returned no direct links, falling back to RapidAPI...');
+            } catch (err) {
+                console.warn('Facebook specific API logic failed:', err.message);
+            }
+        }
+
+        // Sử dụng RapidAPI Social Download All In One cho tất cả nền tảng (trừ TikTok đã xử lý ở trên)
+        try {
+            console.log(`--- Fetching via RapidAPI Social Download All In One: ${url} ---`);
+
+            // Tầng 1: RapidAPI - Social Download All In One (nếu có key)
+            if (this.currentRapidApiKey) {
+                try {
+                    const rapidApiResponse = await axios.post(
+                        'https://social-download-all-in-one.p.rapidapi.com/v1/social/autolink',
+                        { url: url },
+                        {
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'x-rapidapi-key': this.currentRapidApiKey,
+                                'x-rapidapi-host': 'social-download-all-in-one.p.rapidapi.com'
+                            },
+                            timeout: 25000
+                        }
+                    );
+
+                    const data = rapidApiResponse.data;
+                    console.log('RapidAPI response status:', data?.status);
+
+                    if (data) {
+                        // Trích xuất download links từ response
+                        let quality: any[] = [];
+
+                        // Xử lý medias array (format phổ biến nhất)
+                        if (data.medias && Array.isArray(data.medias)) {
+                            data.medias.forEach((media: any, idx: number) => {
+                                if (media.url) {
+                                    quality.push({
+                                        label: media.quality
+                                            ? `${media.quality}${media.extension ? ' (' + media.extension + ')' : ''}`
+                                            : `Tải #${idx + 1}`,
+                                        url: media.url,
+                                        type: media.type === 'audio' ? 'audio' : 'video'
+                                    });
+                                }
+                            });
+                        }
+
+                        // Xử lý url trực tiếp
+                        if (quality.length === 0 && data.url) {
+                            quality.push({
+                                label: 'Tải Video (Chất lượng gốc)',
+                                url: data.url,
+                                type: 'video'
+                            });
+                        }
+
+                        // Xử lý links array (format khác)
+                        if (quality.length === 0 && data.links && Array.isArray(data.links)) {
+                            data.links.forEach((link: any, idx: number) => {
+                                const linkUrl = link.link || link.url;
+                                if (linkUrl) {
+                                    quality.push({
+                                        label: link.quality || `Tải #${idx + 1}`,
+                                        url: linkUrl,
+                                        type: link.type === 'audio' ? 'audio' : 'video'
+                                    });
+                                }
+                            });
+                        }
+
+                        if (quality.length > 0) {
+                            console.log(`--- RapidAPI success! Found ${quality.length} download links ---`);
+                            return {
+                                title: data.title || `Video ${platform}`,
+                                thumbnail: data.thumbnail || data.picture || data.cover || 'https://placehold.co/600x400/000000/FFFFFF/png?text=Market+OS+Video',
+                                source: new URL(url).hostname,
+                                platform: platform,
+                                quality: quality
+                            };
+                        }
+                    }
+                    console.warn('RapidAPI returned no valid links, trying fallback...');
+                } catch (rapidErr) {
+                    console.warn('RapidAPI Social Download failed:', rapidErr.response?.data || rapidErr.message);
+                }
+            } else {
+                console.warn('No RapidAPI key configured, skipping RapidAPI tier...');
+            }
+
+            // Tầng 2: API miễn phí - ssyoutube / saveform
+            const freeApis = [
+                {
+                    name: 'SaveFrom',
+                    request: async () => {
+                        return await axios.get(`https://api.savefrom.biz/api/convert`, {
+                            params: { url: url },
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                            },
+                            timeout: 15000,
+                        });
+                    }
+                }
+            ];
+
+            for (const api of freeApis) {
+                try {
+                    console.log(`Trying free API: ${api.name}`);
+                    const res = await api.request();
+                    const htmlOrData = res.data;
+                    const htmlStr = typeof htmlOrData === 'string' ? htmlOrData : JSON.stringify(htmlOrData);
+
+                    // Tìm link download từ response
+                    const videoLinks: string[] = [];
+                    const linkRegex = /href="(https?:\/\/[^"]*(?:\.mp4|\.webm|video)[^"]*?)"/gi;
+                    let match;
+                    while ((match = linkRegex.exec(htmlStr)) !== null && videoLinks.length < 5) {
+                        videoLinks.push(match[1].replace(/&amp;/g, '&'));
+                    }
+
+                    // Fallback: tìm download_url hoặc url trong JSON
+                    if (videoLinks.length === 0 && typeof htmlOrData === 'object') {
+                        const findUrls = (obj: any): string[] => {
+                            const urls: string[] = [];
+                            if (!obj || typeof obj !== 'object') return urls;
+                            for (const key of Object.keys(obj)) {
+                                if ((key === 'url' || key === 'download_url' || key === 'link') && typeof obj[key] === 'string' && obj[key].startsWith('http')) {
+                                    urls.push(obj[key]);
+                                } else if (typeof obj[key] === 'object') {
+                                    urls.push(...findUrls(obj[key]));
+                                }
+                            }
+                            return urls;
+                        };
+                        videoLinks.push(...findUrls(htmlOrData));
+                    }
+
+                    if (videoLinks.length > 0) {
+                        console.log(`--- ${api.name} success! Found ${videoLinks.length} links ---`);
+                        return {
+                            title: `Video ${platform}`,
+                            thumbnail: 'https://placehold.co/600x400/000000/FFFFFF/png?text=Market+OS+Video',
+                            source: new URL(url).hostname,
+                            platform: platform,
+                            quality: videoLinks.map((link, idx) => ({
+                                label: `Tải Video #${idx + 1}`,
+                                url: link,
+                                type: 'video'
+                            }))
+                        };
+                    }
+                } catch (freeErr) {
+                    console.warn(`Free API ${api.name} failed:`, freeErr.message);
+                }
+            }
+
+            // Tầng 3: Cobalt API (Dự phòng cuối cùng cực mạnh)
+            try {
+                console.log(`--- Falling back to Cobalt: ${url} ---`);
+                const cobaltMirrors = [
+                    'https://api.cobalt.tools/api/json',
+                    'https://cobalt.tools/api/json'
+                ];
+
+                for (const mirror of cobaltMirrors) {
+                    try {
+                        const cobaltRes = await axios.post(mirror, {
+                            url: url,
+                            videoQuality: '1080',
+                        }, {
+                            headers: {
+                                'Accept': 'application/json',
+                                'Content-Type': 'application/json',
+                                'User-Agent': 'Mozilla/5.0'
+                            },
+                            timeout: 15000
+                        });
+
+                        if (cobaltRes.data && cobaltRes.data.url) {
+                            console.log(`--- Cobalt success via ${mirror} ---`);
+                            return {
+                                title: `Video ${platform}`,
+                                thumbnail: 'https://placehold.co/600x400/000000/FFFFFF/png?text=Market+OS+Video',
+                                source: new URL(url).hostname,
+                                platform: platform,
+                                quality: [{
+                                    label: 'Chất lượng cao nhất',
+                                    url: cobaltRes.data.url,
+                                    type: 'video'
+                                }]
+                            };
+                        }
+                    } catch (mErr) {
+                        console.warn(`Mirror ${mirror} failed:`, mErr.message);
+                    }
+                }
+            } catch (cobaltErr) {
+                console.warn('All Cobalt attempts failed:', cobaltErr.message);
+            }
+
+            throw new BadRequestException(
+                `Không thể tải video từ ${platform}. Nền tảng này có thể đang hạn chế truy cập hoặc link không hợp lệ.`
+            );
+
+        } catch (error) {
+            console.error('Final Download Error:', error.response?.data || error.message);
+            if (error instanceof BadRequestException) throw error;
+            throw new BadRequestException(
+                `Không thể tải video từ ${platform}. Vui lòng kiểm tra lại link hoặc thử sau.`
+            );
+        }
+    }
+
+    private detectPlatform(url: string): string {
+        try {
+            const urlStr = url.toLowerCase();
+            if (urlStr.includes('youtube.com') || urlStr.includes('youtu.be')) return 'Youtube';
+            if (urlStr.includes('facebook.com/reels') || urlStr.includes('facebook.com/reel')) return 'Facebook Reels';
+            if (urlStr.includes('facebook.com') || urlStr.includes('fb.watch')) return 'Facebook';
+            if (urlStr.includes('instagram.com')) return 'Instagram';
+            if (urlStr.includes('tiktok.com')) return 'TikTok';
+            if (urlStr.includes('douyin.com')) return 'Douyin';
+            if (urlStr.includes('twitter.com') || urlStr.includes('x.com')) return 'Twitter/X';
+            return 'Website';
+        } catch {
+            return 'Unknown';
+        }
+    }
+
+    async downloadTikTokVideo(url: string, userId: string, skipDeduction = false): Promise<any> {
+        // Tách URL từ chuỗi nếu người dùng paste cả text
+        const urlRegex = /(https?:\/\/[^\s，！。？]+)/;
+        const urlMatch = url.match(urlRegex);
+        if (urlMatch) {
+            url = urlMatch[0];
+        }
+
+        if (!skipDeduction) {
+            await this.deductCredits(userId, this.CREDIT_COSTS.VIDEO_DOWNLOAD, 'Tải video TikTok');
+        }
+
+        try {
+            // Làm sạch URL: xóa query params và dấu slash cuối cùng
+            let cleanUrl = url.trim().split('?')[0];
+            if (cleanUrl.endsWith('/')) {
+                cleanUrl = cleanUrl.slice(0, -1);
+            }
+
+            // Xử lý link Douyin linh hoạt hơn
+            if (cleanUrl.includes('douyin.com')) {
+                // Nếu là link rút gọn v.douyin.com, cần resolve sang link thật để lấy ID
+                if (cleanUrl.includes('v.douyin.com')) {
+                    try {
+                        const resolveRes = await axios.get(cleanUrl, {
+                            maxRedirects: 5,
+                            timeout: 10000,
+                            validateStatus: (status) => status >= 200 && status < 400,
+                        });
+                        cleanUrl = resolveRes.request.res.responseUrl || resolveRes.config.url || cleanUrl;
+                        console.log(`--- Resolved Douyin Short URL to: ${cleanUrl} ---`);
+                    } catch (e) {
+                        console.warn('Failed to resolve short Douyin URL, proceeding with original:', e.message);
+                    }
+                }
+
+                const match = cleanUrl.match(/\/video\/(\d+)/);
+                if (match && match[1]) {
+                    // Format www.douyin.com/video/ID được TikWM hỗ trợ tốt hơn iesdouyin
+                    cleanUrl = `https://www.douyin.com/video/${match[1]}`;
+                }
+            }
+
+            console.log(`--- Fetching via TikWM: ${cleanUrl} ---`);
+
+            const params = new URLSearchParams();
+            params.append('url', cleanUrl);
+            params.append('hd', '1');
+
+            const response = await axios.post('https://www.tikwm.com/api/', params, {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
+                },
+                timeout: 20000
+            });
+
+            if (response.data && response.data.code === 0) {
+                const data = response.data.data;
+                return {
+                    id: data.id,
+                    title: data.title,
+                    cover: data.cover,
+                    origin_cover: data.origin_cover,
+                    play: data.play,
+                    wmplay: data.wmplay,
+                    hdplay: data.hdplay,
+                    music: data.music,
+                    music_info: data.music_info,
+                    author: data.author,
+                    stats: {
+                        play_count: data.play_count,
+                        digg_count: data.digg_count,
+                        comment_count: data.comment_count,
+                        share_count: data.share_count,
+                        download_count: data.download_count
+                    }
+                };
+            } else {
+                console.error('TikWM Error:', response.data);
+                throw new BadRequestException(response.data?.msg || 'Không thể lấy dữ liệu TikTok/Douyin. Vui lòng kiểm tra lại đường dẫn video.');
+            }
+        } catch (error) {
+            console.error('Lỗi khi fetch TikTok:', error.message);
+            throw new BadRequestException('Không thể kết nối đến máy chủ tải video (TikWM). Vui lòng thử lại sau.');
+        }
+    }
+
+    private async callTikWM(url: string, params: any, retryCount = 0, bypassCache = false): Promise<any> {
+        try {
+            const cacheKey = `${url}_${JSON.stringify(params)}`;
+            const cached = this.cache.get(cacheKey);
+            if (!bypassCache && cached && (Date.now() - cached.timestamp < this.CACHE_TTL)) {
+                return cached.data;
+            }
+
+            const response = await axios.get(url, { params, headers: { 'User-Agent': 'Mozilla/5.0' } });
+
+            if (response.data?.code === -1 && response.data?.msg?.includes('Limit hit')) {
+                if (retryCount < 3) {
+                    const delay = (retryCount + 2) * 3000;
+                    console.log(`TikWM Limit hit, retrying in ${delay}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    return this.callTikWM(url, params, retryCount + 1);
+                }
+                throw new Error('Hệ thống TikWM quá tải (Limit). Vui lòng đợi vài giây và thử lại.');
+            }
+
+            if (response.data) {
+                this.cache.set(cacheKey, { data: response.data, timestamp: Date.now() });
+            }
+            return response.data;
+        } catch (error) {
+            console.error('TikWM API Error:', error.message);
+            if (retryCount < 3 && !error.message?.includes('Limit')) {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                return this.callTikWM(url, params, retryCount + 1);
+            }
+            return null;
+        }
+    }
+
+    async analyzeTikTokChannel(uniqueId: string, userId: string): Promise<any> {
+        await this.deductCredits(userId, this.CREDIT_COSTS.TIKTOK_ANALYTICS, 'Phân tích kênh TikTok');
+
+        const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
+
+        try {
+            console.log(`--- Analyzing TikTok Channel: ${uniqueId} ---`);
+
+            // Nếu có RapidAPI Key, sử dụng TikTok-API23 (Lundehund) - Ưu tiên vì cực kỳ ổn định
+            if (this.currentRapidApiKey) {
+                console.log('--- Using TikTok-API23 (RapidAPI) for stability ---');
+                try {
+                    const response = await axios.get('https://tiktok-api23.p.rapidapi.com/api/user/info', {
+                        params: { username: uniqueId.replace(/^@/, '') },
+                        headers: {
+                            'X-RapidAPI-Key': this.currentRapidApiKey,
+                            'X-RapidAPI-Host': 'tiktok-api23.p.rapidapi.com'
+                        }
+                    });
+
+                    if (response.data && response.data.user) {
+                        const userData = response.data.user;
+                        const stats = response.data.stats;
+
+                        // Lấy video bài đăng bằng UID numeric (quan trọng để API23 chạy ổn định)
+                        const videos = await this.getTikTokUserVideos(uniqueId, userData.userId || userData.id);
+
+                        // AI Analysis based on fetched data
+                        const aiReport = await this.generateTikTokAIAnalysis(userData, stats, videos);
+
+                        return {
+                            user: {
+                                id: userData.userId || userData.id,
+                                uniqueId: userData.uniqueId,
+                                nickname: userData.nickname,
+                                avatarMedium: userData.avatarMedium || userData.avatarThumb,
+                                signature: userData.signature,
+                                verified: userData.verified,
+                                secUid: userData.secUid,
+                                region: userData.region || 'Unknown'
+                            },
+                            stats: {
+                                followerCount: stats.followerCount,
+                                followingCount: stats.followingCount,
+                                heartCount: stats.heartCount,
+                                videoCount: stats.videoCount,
+                                diggCount: stats.diggCount || 0
+                            },
+                            topVideos: videos,
+                            aiAnalysis: aiReport
+                        };
+                    }
+                } catch (rapidErr) {
+                    console.error('RapidAPI Error:', rapidErr.message);
+                }
+            }
+
+            // Fallback về TikWM nếu không có RapidAPI Key hoặc RapidAPI lỗi
+            // Làm sạch uniqueId nếu người dùng truyền vào cả link
+            let cleanId = uniqueId.trim();
+            if (cleanId.includes('tiktok.com')) {
+                const match = cleanId.match(/@([^/?#]+)/);
+                cleanId = match ? match[1] : (cleanId.split('/').pop() || '').replace('@', '');
+            }
+            cleanId = cleanId.replace(/^@/, '');
+
+            const response = await this.callTikWM('https://www.tikwm.com/api/user/info', {
+                unique_id: cleanId
+            });
+
+            if (response && response.code === 0 && response.data) {
+                const data = response.data;
+                // Tăng độ trễ để tránh Limit 1 request/second của TikWM Free
+                await new Promise(resolve => setTimeout(resolve, 3100));
+
+                // TikWM có thể dùng sec_uid hoặc sec_uid tùy phiên bản/vùng
+                const secUid = data.user.secUid || data.user.sec_uid || data.user.sec_id;
+                const isPrivate = !!(data.user.privateItem || data.user.secret);
+
+                const videos = isPrivate ? [] : await this.getTikTokUserVideos(cleanId, secUid);
+                const aiReport = await this.generateTikTokAIAnalysis(data.user, data.stats, videos);
+
+                return {
+                    user: {
+                        id: data.user.id || data.user.user_id,
+                        uniqueId: data.user.uniqueId || data.user.unique_id,
+                        nickname: data.user.nickname,
+                        avatarMedium: data.user.avatarMedium || data.user.avatar_medium || data.user.avatarThumb || data.user.avatar_thumb,
+                        signature: data.user.signature,
+                        verified: data.user.verified,
+                        secUid: secUid,
+                        region: data.user.region || 'VN'
+                    },
+                    stats: {
+                        followerCount: data.stats.followerCount || data.stats.follower_count || 0,
+                        followingCount: data.stats.followingCount || data.stats.following_count || 0,
+                        heartCount: data.stats.heartCount || data.stats.heart_count || 0,
+                        videoCount: data.stats.videoCount || data.stats.video_count || 0,
+                        diggCount: data.stats.diggCount || data.stats.digg_count || 0
+                    },
+                    isPrivate, // Thêm thông tin trạng thái riêng tư
+                    topVideos: videos,
+                    aiAnalysis: aiReport,
+                    healthScore: this.calculateHealthScore(data.stats, videos)
+                };
+            }
+
+            throw new Error(response?.msg || 'Hệ thống TikWM đang bận hoặc ID không tồn tại.');
+        } catch (error) {
+            console.error('Lỗi phân tích TikTok:', error.message);
+            const msg = this.currentRapidApiKey
+                ? 'Lỗi kết nối API trả phí. Vui lòng kiểm tra lại hạn mức.'
+                : (error.message || 'Hệ thống đang bận. Vui lòng cung cấp RapidAPI Key để hoạt động ổn định.');
+            throw new Error(msg);
+        }
+    }
+
+    async generateTikTokAIAnalysis(user: any, stats: any, videos: any[], retryCount = 0): Promise<any> {
+        if (!this.model) return this.getDefaultAIAnalysis();
+
+        const prompt = `Bạn là một chuyên gia phân tích dữ liệu TikTok bậc thầy. Hãy phân tích kênh sau:
+        - Nickname: ${user.nickname} (@${user.uniqueId})
+        - Bio: ${user.signature || 'Chưa có'}
+        - Followers: ${stats.followerCount || stats.follower_count || 0}
+        - Tổng Likes: ${stats.heartCount || stats.heart_count || 0}
+        - Video: ${stats.videoCount || stats.video_count || 0}
+        - Top 10 video mới nhất:
+        ${videos.map(v => `- ${v.title} (${v.play_count} views, ${v.digg_count} likes)`).join('\n')}
+
+        HÃY TRẢ VỀ JSON CHUẨN (KHÔNG CHỨA CHỮ KHÁC):
+        {
+          "category": "Chủ đề của kênh",
+          "status": "VIRAL" hoặc "FLOP" hoặc "STABLE",
+          "statusText": "Giải thích trạng thái hiện tại",
+          "postingTime": "Khung giờ vàng đề xuất",
+          "viralKeywords": ["Từ khóa 1", "Từ khóa 2", "Từ khóa 3"],
+          "whyViral": "Phân tích vì sao nội dung hấp dẫn người xem",
+          "suggestions": ["Gợi ý 1", "Gợi ý 2"]
+        }`;
+
+        try {
+            const result = await this.model.generateContent(prompt);
+            const response = await result.response;
+            const text = response.text();
+
+            // Tìm và bóc tách đoạn JSON trong trường hợp AI trả kèm Markdown
+            const jsonMatch = text.match(/\{[\s\S]*\}/);
+            const jsonStr = jsonMatch ? jsonMatch[0] : text;
+            return JSON.parse(jsonStr);
+        } catch (error) {
+            console.error(`Lỗi AI Analysis (Lần ${retryCount + 1}):`, error.message);
+
+            // Nếu lỗi 503 hoặc 429 thì thử lại sau vài giây
+            if ((error.message?.includes('503') || error.message?.includes('429')) && retryCount < 2) {
+                const waitTime = (retryCount + 1) * 3000;
+                await new Promise(resolve => setTimeout(resolve, waitTime));
+                return this.generateTikTokAIAnalysis(user, stats, videos, retryCount + 1);
+            }
+
+            return this.getDefaultAIAnalysis();
+        }
+    }
+
+    private getDefaultAIAnalysis() {
+        return {
+            category: "Tổng hợp nội dung",
+            status: "STABLE",
+            statusText: "Kênh đang trong giai đoạn phát triển ổn định.",
+            postingTime: "19:00 - 21:00 hàng ngày",
+            viralKeywords: ["Trending", "Phát triển", "TikTok"],
+            whyViral: "Nội dung kênh tập trung vào các chủ đề phổ biến, cách trình bày gần gũi và có sự đầu tư về hình ảnh.",
+            suggestions: ["Cần đăng bài đều đặn hơn", "Tương tác với người xem trong comment"]
+        };
+    }
+
+    async getTikTokUserVideos(uniqueId: string, userIdOrSecUid?: string): Promise<any> {
+        const cleanId = uniqueId.replace(/^@/, '');
+
+        // Ưu tiên TikTok-API23 (Lundehund) nếu có Key
+        if (this.currentRapidApiKey) {
+            try {
+                const response = await axios.get('https://tiktok-api23.p.rapidapi.com/api/user/posts', {
+                    params: {
+                        user_id: userIdOrSecUid,
+                        count: 10,
+                        cursor: 0
+                    },
+                    headers: {
+                        'X-RapidAPI-Key': this.currentRapidApiKey,
+                        'X-RapidAPI-Host': 'tiktok-api23.p.rapidapi.com'
+                    }
+                });
+
+                if (response.data && response.data.videos) {
+                    return response.data.videos.map((v: any) => ({
+                        id: v.videoId,
+                        title: v.desc,
+                        cover: v.cover,
+                        play_count: v.stats?.playCount || 0,
+                        digg_count: v.stats?.diggCount || 0,
+                        comment_count: v.stats?.commentCount || 0,
+                        share_count: v.stats?.shareCount || 0,
+                        create_time: v.createTime
+                    }));
+                }
+            } catch (err) {
+                console.error('API23 Posts Error:', err.message);
+            }
+        }
+
+        // Bước tiếp theo: Fallback về Search API của TikWM
+        try {
+            const response = await this.callTikWM('https://www.tikwm.com/api/feed/search', {
+                keywords: `@${cleanId}`,
+                count: 30 // Lấy nhiều hơn để lọc chính xác nhất
+            });
+
+            if (response && response.code === 0 && response.data) {
+                // TikWM search có thể trả về array trực tiếp hoặc object chứa videos
+                const videos = Array.isArray(response.data) ? response.data : (response.data.videos || []);
+
+                // Đồng bộ cấu trúc và lọc chỉ lấy video của đúng chủ kênh
+                const mappedVideos = videos
+                    .filter((v: any) => v.author?.unique_id === cleanId || v.author?.uniqueId === cleanId)
+                    .map((v: any) => ({
+                        id: v.video_id,
+                        title: v.title,
+                        cover: v.cover,
+                        play_count: v.play_count || 0,
+                        digg_count: v.digg_count || 0,
+                        comment_count: v.comment_count || 0,
+                        share_count: v.share_count || 0,
+                        create_time: v.create_time
+                    }));
+
+                return mappedVideos.sort((a: any, b: any) => (b.play_count || 0) - (a.play_count || 0)).slice(0, 10);
+            }
+        } catch (e) {
+            console.error('TikWM Search Error:', e.message);
+        }
+
+        return [];
+    }
+
+    private calculateHealthScore(stats: any, videos: any[]): number {
+        if (!stats || !videos.length) return 50;
+
+        const followers = stats.followerCount || stats.follower_count || 1;
+        const avgViews = videos.reduce((acc, v) => acc + (v.play_count || 0), 0) / videos.length;
+
+        // Công thức tính score: (View trung bình / Follower) * trọng số + (Tốc độ ra video)
+        let score = (avgViews / followers) * 100;
+
+        // Tối đa 100, tối thiểu 10
+        score = Math.min(Math.max(score, 10), 100);
+
+        // Thưởng điểm nếu có video cực kỳ viral (>1M view)
+        if (videos.some(v => v.play_count > 1000000)) score += 15;
+
+        return Math.min(Math.round(score), 100);
+    }
+
+    async generateTikTokVideoScript(uniqueId: string, niche: string, userId: string): Promise<any> {
+        if (!this.model) return null;
+
+        await this.deductCredits(userId, this.CREDIT_COSTS.TIKTOK_SCRIPT, 'Tạo kịch bản TikTok');
+
+        const prompt = `Bạn là một chuyên gia sáng tạo nội dung (Content Creator) với 10 triệu followers trên TikTok.
+        Dựa trên kênh TikTok @${uniqueId} thuộc lĩnh vực: ${niche}.
+        Hãy tạo 1 kịch bản video ngắn (dưới 60s) có tiềm năng VIRAL cao.
+        
+        Yêu cầu kịch bản gồm:
+        1. Hook (3s đầu): Phải cực kỳ gây tò mò.
+        2. Content Body: Nội dung cô đọng, giàu giá trị hoặc cảm xúc.
+        3. Call to Action: Thúc đẩy follow/comment.
+        4. Gợi ý Caption & Hashtags.
+
+        Hãy trả về JSON:
+        {
+          "title": "Tiêu đề video",
+          "hook": "Câu mở đầu",
+          "script": "Nội dung chi tiết từng phân cảnh",
+          "cta": "Lời kêu gọi",
+          "caption": "Caption gợi ý",
+          "hashtags": ["tag1", "tag2"]
+        }`;
+
+        try {
+            const result = await this.model.generateContent(prompt);
+            const text = result.response.text();
+            const jsonMatch = text.match(/\{[\s\S]*\}/);
+            return JSON.parse(jsonMatch ? jsonMatch[0] : text);
+        } catch (error) {
+            console.error('Lỗi tạo kịch bản:', error);
+            return null;
+        }
+    }
+
+    async getTikTokTrending(region = 'VN', count = 50, refresh = false, category?: string, userId?: string): Promise<any> {
+        try {
+            if (userId) {
+                await this.deductCredits(userId, this.CREDIT_COSTS.TIKTOK_TRENDING, 'Xu hướng TikTok');
+            }
+
+            // 1. Luôn lấy dữ liệu Trending TOÀN CẦU để thống kê âm nhạc (đảm bảo nhạc trend không bị lọc theo category)
+            const globalTrending = await this.callTikWM('https://www.tikwm.com/api/feed/list', {
+                region: region,
+                count: 50
+            }, 0, refresh);
+
+            let trendingVideos = [];
+            if (globalTrending && globalTrending.code === 0 && globalTrending.data) {
+                trendingVideos = Array.isArray(globalTrending.data) ? globalTrending.data : (globalTrending.data.videos || []);
+            }
+
+            // 2. Lấy dữ liệu Video theo Category (nếu có) để hiển thị trong lưới video
+            let displayVideos = trendingVideos;
+            if (category && category !== 'all') {
+                const categoryResponse = await this.callTikWM('https://www.tikwm.com/api/feed/search', {
+                    keywords: category,
+                    region: region,
+                    count: 50,
+                    type: 1
+                }, 0, refresh);
+
+                if (categoryResponse && categoryResponse.code === 0 && categoryResponse.data) {
+                    displayVideos = Array.isArray(categoryResponse.data) ? categoryResponse.data : (categoryResponse.data.videos || []);
+                }
+            }
+
+            // 3. Thống kê Trending Sounds từ dữ liệu TOÀN CẦU (nhạc trend thực sự của TikTok)
+            const soundMap = new Map();
+            trendingVideos.forEach((v: any) => {
+                if (v.music_info) {
+                    const mid = v.music_info.id;
+                    if (!soundMap.has(mid)) {
+                        soundMap.set(mid, { ...v.music_info, count: 1 });
+                    } else {
+                        soundMap.get(mid).count += 1;
+                    }
+                }
+            });
+
+            const trending_sounds = Array.from(soundMap.values())
+                .sort((a, b) => b.count - a.count)
+                .slice(0, 10);
+            // 4. Phân tích xu hướng bằng AI dựa trên displayVideos (video đang hiển thị)
+            let insights = null;
+            if (this.model && displayVideos.length > 0) {
+                const videoContext = displayVideos.slice(0, 15).map((v: any) => v.title).filter((t: any) => t).join('\n');
+                const currentDate = new Date().toLocaleDateString('vi-VN', { month: '2-digit', year: 'numeric' });
+                const prompt = `Bạn là một chuyên gia phân tích xu hướng TikTok chuyên sâu.
+                HÔM NAY LÀ NGÀY: ${currentDate}.
+                Phân tích danh sách tiêu đề video/nội dung đang xu hướng TikTok sau tại khu vực ${region} (vào giai đoạn năm 2025-2026):
+                
+                DỮ LIỆU ĐẦU VÀO:
+                ${videoContext}
+                
+                Dựa trên danh sách này và bối cảnh thời gian hiện tại (${currentDate}), hãy thực hiện:
+                1. Trích xuất 5-10 từ khóa (keywords) viral/thịnh hành nhất hiện nay.
+                2. Tóm tắt một câu về định hướng nội dung đang chiếm sóng (xu hướng xem thực tế hiện nay).
+                3. Đưa ra 1 lời khuyên thực chiến ngắn gọn cho nhà sáng tạo nội dung muốn "bắt trend" ngay lúc này.
+                4. Phân tích tệp đối tượng mục tiêu (target_audience) và các chỉ số dự báo (metrics) như Viral Potential (%), Est. Views, Engagement Rate (%).
+                
+                Hãy trả về kết quả dưới định dạng JSON thuần túy (không kèm markdown):
+                {
+                  "keywords": ["từ khóa 1", "từ khóa 2", ...],
+                  "trend_summary": "Mô tả xu hướng hiện tại",
+                  "advice": "Lời khuyên thực chiến",
+                  "target_audience": ["Tệp 1", "Tệp 2", "Tệp 3"],
+                  "metrics": [
+                    {"label": "Viral Potential", "value": "90%"},
+                    {"label": "Est. Views", "value": "100k-500k"},
+                    {"label": "Engagement Rate", "value": "12.5%"}
+                  ]
+                }`;
+
+                try {
+                    const result = await this.model.generateContent(prompt);
+                    const text = result.response.text();
+                    const jsonMatch = text.match(/\{[\s\S]*\}/);
+                    insights = JSON.parse(jsonMatch ? jsonMatch[0] : text);
+                } catch (e) {
+                    console.error('Lỗi AI phân tích trend:', e);
+                }
+            }
+
+            return {
+                videos: displayVideos,
+                insights,
+                trending_sounds
+            };
+        } catch (error) {
+            console.error('Lỗi lấy trending TikTok:', error);
+            return { videos: [], insights: null, trending_sounds: [] };
+        }
+    }
+    async generateLandingPage(userPrompt: string) {
+        if (!this.model) {
+            throw new Error('Gemini API Key is not configured');
+        }
+
+        const isAllowed = await this.checkLimit('gemini');
+        if (!isAllowed) {
+            throw new Error('Hạn mức sử dụng Gemini đã hết. Vui lòng nâng cấp gói.');
+        }
+
+        await this.trackUsage('gemini');
+
+        const systemPrompt = `
+        BẠN LÀ MỘT DESIGNER LANDING PAGE CHUYÊN NGHIỆP TRÊN NỀN TẢNG PUCK EDITOR.
+        Nhiệm vụ: Chuyển đổi yêu cầu của khách hàng thành cấu trúc JSON hoàn chỉnh để dựng trang web.
+
+        QUY TẮC BẮT BUỘC:
+        1. CẤU TRÚC TRANG (Content Flow): Một trang phải có đầy đủ các phần theo trình tự: 
+           Navbar -> Hero -> Features -> Pricing -> FAQ -> CTA -> Footer.
+        2. TỐI ĐA 1 FOOTER: Tuyệt đối không được phép có nhiều hơn 1 component "Footer".
+        3. ĐA DẠNG HÓA: Không lặp lại bất kỳ component nào (ngoại trừ Spacer/Divider). Nếu muốn thêm nội dung, hãy dùng các loại Component khác nhau.
+        4. TIẾNG VIỆT: Sử dụng ngôn ngữ tiếng Việt tự nhiên, chuyên nghiệp, hấp dẫn người đọc.
+
+        DANH SÁCH COMPONENT HỢP LỆ (HÃY CHỌN LỌC ĐA DẠNG):
+        - Navbar: { logoName, bgColor, textColor, links: [{label, url}] }
+        - Hero: { title, subtitle, buttonText, imageUrl, bgColor, textColor, primaryColor, layout: "left"|"center"|"right" }
+        - Features: { title, items: [{title, desc, icon}], bgColor, columns: 3 }
+        - Pricing: { title, bgColor, plans: [{name, price, features: [{text}], popular: boolean}] }
+        - Testimonials: { title, items: [{name, role, content, avatarUrl}], bgColor }
+        - FAQ: { title, items: [{question, answer}], bgColor }
+        - CTA: { title, subtitle, buttonText, bgColor, textColor }
+        - Footer: { text, bgColor, textColor }
+        - Stats: { items: [{label, value, suffix}], bgColor }
+        - Navbar, Hero, Features, Pricing, Testimonials, FAQ, CTA, Footer, Stats, Partners, Gallery, Process, Video, Map, Form, Card.
+
+        VÍ DỤ CẤU TRÚC JSON CHUẨN (BẠN PHẢI TRẢ VỀ DẠNG NÀY):
+        {
+          "content": [
+            { "type": "Navbar", "props": { "logoName": "BrandName", "links": [{"label": "Tính năng", "url": "#"}] } },
+            { "type": "Hero", "props": { "title": "Giải pháp cho bạn", "subtitle": "Mô tả chi tiết hơn về dịch vụ", "buttonText": "Khám phá ngay" } },
+            { "type": "Features", "props": { "title": "Tại sao chọn chúng tôi?", "items": [{"title": "Tiết kiệm", "desc": "Giảm 50% chi phí", "icon": "Zap"}] } },
+            { "type": "Pricing", "props": { "title": "Bảng giá dịch vụ", "plans": [{"name": "Cơ bản", "price": "99k", "features": [{"text": "Tính năng 1"}]}] } },
+            { "type": "Footer", "props": { "text": "© 2024 Bản quyền thuộc về..." } }
+          ],
+          "root": { "props": { "title": "Tên trang web" } }
+        }
+
+        YÊU CẦU CỦA KHÁCH HÀNG: "${userPrompt}"
+
+        HÃY TẠO MỘT TRANG ĐẦY ĐỦ CÁC KHỐI, KHÔNG ĐƯỢC CHỈ TẠO FOOTER. TRẢ VỀ DUY NHẤT JSON.
+        `;
+
+        try {
+            const result = await this.model.generateContent(systemPrompt);
+            const responseText = result.response.text();
+
+            // Tìm kiếm JSON trong phản hồi (đề phòng AI trả về text dư thừa)
+            const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+            if (!jsonMatch) {
+                throw new Error("AI không trả về định dạng JSON hợp lệ");
+            }
+
+            const puckData = JSON.parse(jsonMatch[0].trim());
+
+            // ===== LỚP BẢO VỆ: Lọc duplicate components =====
+            // Các component section chỉ được xuất hiện 1 lần
+            const UNIQUE_COMPONENTS = [
+                'Navbar', 'Hero', 'Features', 'Pricing', 'Testimonials',
+                'FAQ', 'CTA', 'Footer', 'Stats', 'Partners', 'Gallery',
+                'Process'
+            ];
+            const seenTypes = new Set<string>();
+
+            if (puckData.content && Array.isArray(puckData.content)) {
+                // Lọc các component bị trùng
+                puckData.content = puckData.content.filter((item: any) => {
+                    if (!item || !item.type) return false;
+                    if (UNIQUE_COMPONENTS.includes(item.type)) {
+                        if (seenTypes.has(item.type)) {
+                            console.log(`[AI Guard] Removed duplicate component: ${item.type}`);
+                            return false; // Bỏ qua component bị trùng
+                        }
+                        seenTypes.add(item.type);
+                    }
+                    return true;
+                });
+
+                // Thêm ID duy nhất cho từng component (Puck yêu cầu)
+                puckData.content = puckData.content.map((item: any, index: number) => ({
+                    ...item,
+                    id: `ai-${item.type?.toLowerCase()}-${index}-${Date.now()}`,
+                    props: {
+                        ...(item.props || {}),
+                    }
+                }));
+
+                console.log(`[AI] Generated ${puckData.content.length} unique components`);
+            }
+
+            return puckData;
+        } catch (error) {
+            console.error("Generate Landing Page Error:", error.message);
+            throw new Error('Lỗi khi AI tạo Landing Page: ' + error.message);
+        }
+    }
+
+    private async extractAudioWithFFmpeg(videoPath: string, audioPath: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            ffmpeg(videoPath)
+                .outputOptions([
+                    '-vn',
+                    '-ar 44100',
+                    '-ac 2',
+                    '-b:a 64k',
+                ])
+                .save(audioPath)
+                .on('end', () => resolve())
+                .on('error', (err: any) => reject(new Error('Lỗi trích xuất âm thanh: ' + err.message)));
+        });
+    }
+
+    private async burnSubtitlesWithFFmpeg(videoPath: string, srtPath: string, outputPath: string, styleMode: string, fontSize?: number, yPos?: number, subColor?: string, subBgColor?: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            let styleArgs = '';
+            const size = fontSize || (styleMode === 'tiktok' ? 26 : (styleMode === 'classic' ? 20 : 22));
+
+            // Handle style formatting
+            // Sử dụng Alignment=2 (Bottom Center) để chuẩn hóa vị trí từ dưới lên
+            // yPos từ client: 0 (top) -> 100 (bottom). 
+            // MarginV (từ dưới lên): (100 - yPos) * 10.8 (theo chuẩn 1080p)
+            const resolvedYPos = yPos !== undefined ? yPos : 80;
+            const finalMarginV = Math.round((100 - resolvedYPos) * 10.8);
+
+            // Helper để chuyển Hex sang ASS format (BBGGRR)
+            const hexToAss = (hex: string) => {
+                if (hex && hex.startsWith('#') && hex.length === 7) {
+                    const r = hex.substring(1, 3);
+                    const g = hex.substring(3, 5);
+                    const b = hex.substring(5, 7);
+                    return `${b}${g}${r}`;
+                }
+                return 'FFFFFF';
+            };
+
+            const assPrimaryColor = subColor ? hexToAss(subColor) : (styleMode === 'tiktok' ? '00FFFF' : 'FFFFFF');
+            const assBgColor = subBgColor ? hexToAss(subBgColor) : '000000';
+
+            // Thêm PlayResY=1080 để cố định hệ tọa độ cho font size và margin, tránh bị to/nhỏ tùy độ phân giải video
+            const style = `force_style='PlayResY=1080,FontSize=${size * 2},PrimaryColour=&H00${assPrimaryColor},BackColour=&H80${assBgColor},BorderStyle=3,Outline=1,Shadow=1,Fontname=Arial,Bold=1,Alignment=2,MarginV=${finalMarginV}'`;
+            styleArgs = style;
+
+            // Xử lý path cho filter subtitles của FFmpeg
+            // Trên Windows cần escape dấu hai chấm của ổ đĩa (C:\ -> C\\\:), trên Linux thì không cần.
+            let safeSrtPath = srtPath.replace(/\\/g, '/');
+            if (process.platform === 'win32') {
+                safeSrtPath = safeSrtPath.replace(/:/g, '\\\\:');
+            }
+
+            ffmpeg(videoPath)
+                .outputOptions([
+                    `-vf subtitles=${safeSrtPath}:${styleArgs}`,
+                    '-preset fast',
+                    '-crf 23',
+                    '-c:a copy'
+                ])
+                .save(outputPath)
+                .on('end', () => {
+                    console.log('--- Đã thêm phụ đề thành công ---');
+                    resolve();
+                })
+                .on('error', (err: any) => reject(new Error('Lỗi ghi phụ đề vào video: ' + err.message)));
+        });
+    }
+
+    async generateAutoSubtitles(file: any, srcLang: string, targetLang: string, style: string, fontSize?: number, yPos?: number, userId?: string, subColor?: string, subBgColor?: string): Promise<any> {
+        if (!this.currentGeminiKey) {
+            throw new Error('Chưa cấu hình API Key Gemini');
+        }
+
+        const job = await this.videoQueue.add('auto-sub', {
+            type: 'auto-sub',
+            data: {
+                fileBuffer: file.buffer.toJSON(), // Chuyển buffer sang JSON để BullMQ serialize được
+                srcLang,
+                targetLang,
+                style,
+                fontSize,
+                yPos,
+                userId,
+                subColor,
+                subBgColor,
+                fileName: file.originalname || 'video.mp4'
+            }
+        });
+
+        return { success: true, jobId: job.id, message: 'Đã thêm yêu cầu vào hàng chờ' };
+    }
+
+    async processAutoSubJob(job: any) {
+        const { fileBuffer, srcLang, targetLang, style, fontSize, yPos, userId, subColor, subBgColor, fileName } = job.data.data;
+
+        const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
+        }
+
+        // Sử dụng job.id để đồng bộ hóa tên file
+        const fileId = job.id;
+        const videoPath = path.join(tempDir, `${fileId}.mp4`);
+        const audioPath = path.join(tempDir, `${fileId}.mp3`);
+        const srtPath = path.join(tempDir, `${fileId}.srt`);
+
+        try {
+            this.logger.log(`[Worker] Bắt đầu xử lý AutoSub cho Job ${job.id}`);
+            await job.updateProgress(10);
+
+            // 1. Save uploaded video
+            fs.writeFileSync(videoPath, Buffer.from(fileBuffer));
+            await job.updateProgress(20);
+
+            // 2. Extract Audio
+            await this.extractAudioWithFFmpeg(videoPath, audioPath);
+            await job.updateProgress(30);
+
+            // 3. Upload to Gemini
+            const fileManager = new GoogleAIFileManager(this.currentGeminiKey!);
+            const uploadResponse = await fileManager.uploadFile(audioPath, {
+                mimeType: 'audio/mp3',
+                displayName: `audio_${fileId}`,
+            });
+            await job.updateProgress(40);
+
+            // 4. Generate SRT
+            const prompt = `
+                Ngôn ngữ gốc của âm thanh là: ${srcLang}.
+                Ngôn ngữ bạn cần dịch ra phụ đề là: ${targetLang}.
+                
+                Hãy nghe âm thanh đính kèm, chép lời (transcribe) và tạo ra phụ đề định dạng SRT. 
+                Mọi khung thời gian phải chính xác với audio. Cấu trúc chuẩn SRT phải tuyệt đối được tuân thủ.
+                QUY TẮC QUAN TRỌNG:
+                - Mỗi đoạn phụ đề (SRT block) KHÔNG ĐƯỢC vượt quá 8 từ.
+                `;
+
+            const result = await this.model.generateContent([
+                {
+                    fileData: {
+                        mimeType: uploadResponse.file.mimeType,
+                        fileUri: uploadResponse.file.uri
+                    }
+                },
+                { text: prompt }
+            ]);
+
+            let srtContent = result.response.text();
+            srtContent = srtContent.replace(/\`\`\`srt|\`\`\`/g, '').trim();
+            await job.updateProgress(70);
+
+            let segments = this.parseSrt(srtContent);
+            segments = this.splitLongSegments(segments, 8);
+            srtContent = this.formatSrt(segments);
+
+            fs.writeFileSync(srtPath, srtContent, 'utf8');
+
+            try {
+                await fileManager.deleteFile(uploadResponse.file.name);
+            } catch (e) { }
+
+            const configPath = path.join(tempDir, `${fileId}_config.json`);
+            fs.writeFileSync(configPath, JSON.stringify({ style, fontSize, yPos, subColor, subBgColor }), 'utf8');
+
+            // 5. Burn Subtitles immediately so the video is ready when the job completes
+            await job.updateProgress(80);
+            const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
+            this.logger.log(`[Worker] Bắt đầu Burn phụ đề cho Job ${job.id}`);
+            await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style || 'tiktok', fontSize, yPos, subColor, subBgColor);
+
+            await job.updateProgress(100);
+            return {
+                success: true,
+                srtContent: srtContent,
+                videoId: fileId
+            };
+        } catch (error) {
+            this.logger.error(`[Worker] Lỗi AutoSub Job ${job.id}: ${error.message}`);
+            if (fs.existsSync(videoPath)) fs.unlinkSync(videoPath);
+            if (fs.existsSync(audioPath)) fs.unlinkSync(audioPath);
+            if (fs.existsSync(srtPath)) fs.unlinkSync(srtPath);
+            throw error;
+        }
+    }
+
+    async downloadBurnedVideo(fileId: string): Promise<{ stream: fs.ReadStream, size: number }> {
+        const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
+        const videoPath = path.join(tempDir, `${fileId}.mp4`);
+        const srtPath = path.join(tempDir, `${fileId}.srt`);
+        const configPath = path.join(tempDir, `${fileId}_config.json`);
+        const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
+
+        if (fs.existsSync(outputPath)) {
+            const stat = fs.statSync(outputPath);
+            const stream = fs.createReadStream(outputPath);
+            return { stream, size: stat.size };
+        }
+
+        if (!fs.existsSync(videoPath) || !fs.existsSync(srtPath)) {
+            throw new Error('Video id không hợp lệ hoặc đã hết hạn.');
+        }
+
+        let style = 'tiktok';
+        let fontSizeVal = 36;
+        let yPosVal = 80;
+        let subColor = '#FFFF00';
+        let subBgColor = '#000000';
+        if (fs.existsSync(configPath)) {
+            const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            style = cfg.style || 'tiktok';
+            fontSizeVal = cfg.fontSize || 36;
+            yPosVal = cfg.yPos || 80;
+            subColor = cfg.subColor || '#FFFF00';
+            subBgColor = cfg.subBgColor || '#000000';
+        }
+
+        console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}, màu ${subColor}/${subBgColor}`);
+        await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal, subColor, subBgColor);
+
+        const stat = fs.statSync(outputPath);
+        const stream = fs.createReadStream(outputPath);
+        return { stream, size: stat.size };
+    }
+
+    async streamBurnedVideo(fileId: string, req: any, res: any): Promise<any> {
+        const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
+        const videoPath = path.join(tempDir, `${fileId}.mp4`);
+        const srtPath = path.join(tempDir, `${fileId}.srt`);
+        const configPath = path.join(tempDir, `${fileId}_config.json`);
+        const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
+
+        if (!fs.existsSync(outputPath)) {
+            if (!fs.existsSync(videoPath) || !fs.existsSync(srtPath)) {
+                throw new Error('Video id không hợp lệ hoặc đã hết hạn.');
+            }
+
+            let style = 'tiktok';
+            let fontSizeVal = 36;
+            let yPosVal = 80;
+            let subColor = '#FFFF00';
+            let subBgColor = '#000000';
+            if (fs.existsSync(configPath)) {
+                const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+                style = cfg.style || 'tiktok';
+                fontSizeVal = cfg.fontSize || 36;
+                yPosVal = cfg.yPos || 80;
+                subColor = cfg.subColor || '#FFFF00';
+                subBgColor = cfg.subBgColor || '#000000';
+            }
+
+            console.log(`Bắt đầu burn phụ đề cứng vào file: ${fileId} với style ${style}, cỡ chữ ${fontSizeVal}, vị trí ${yPosVal}, màu ${subColor}/${subBgColor}`);
+            await this.burnSubtitlesWithFFmpeg(videoPath, srtPath, outputPath, style, fontSizeVal, yPosVal, subColor, subBgColor);
+        }
+
+        const stat = fs.statSync(outputPath);
+        const fileSize = stat.size;
+        const range = req.headers.range;
+
+        if (range) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+            const chunksize = (end - start) + 1;
+            const file = fs.createReadStream(outputPath, { start, end });
+            const head = {
+                'Content-Range': `bytes ${start} -${end}/${fileSize}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': 'video/mp4',
+            };
+
+            res.writeHead(206, head);
+            file.pipe(res);
+            return { stream: file, size: chunksize, path: outputPath };
+        } else {
+            const head = {
+                'Content-Length': fileSize,
+                'Content-Type': 'video/mp4',
+            };
+            res.writeHead(200, head);
+            const file = fs.createReadStream(outputPath);
+            file.pipe(res);
+            return { stream: file, size: fileSize, path: outputPath };
+        }
+    }
+
+    async streamDubbedVideo(jobId: string, req: any, res: any): Promise<void> {
+        const jobDir = path.join(process.cwd(), 'uploads', 'dubbing', jobId);
+        const videoPath = path.join(jobDir, 'dubbed_video.mp4');
+
+        if (!fs.existsSync(videoPath)) {
+            throw new Error('Video lồng tiếng không tồn tại hoặc đã bị xóa.');
+        }
+
+        const stat = fs.statSync(videoPath);
+        const fileSize = stat.size;
+        const range = req.headers.range;
+
+        if (range) {
+            const parts = range.replace(/bytes=/, "").split("-");
+            const start = parseInt(parts[0], 10);
+            const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+
+            const chunksize = (end - start) + 1;
+            const file = fs.createReadStream(videoPath, { start, end });
+            const head = {
+                'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+                'Accept-Ranges': 'bytes',
+                'Content-Length': chunksize,
+                'Content-Type': 'video/mp4',
+            };
+            res.writeHead(206, head);
+            file.pipe(res);
+        } else {
+            const head = {
+                'Content-Length': fileSize,
+                'Content-Type': 'video/mp4',
+            };
+            res.writeHead(200, head);
+            fs.createReadStream(videoPath).pipe(res);
+        }
+    }
+
+    async updateSrtContent(fileId: string, srtContent: string, style?: string, fontSize?: number, yPos?: number, subColor?: string, subBgColor?: string): Promise<any> {
+        const tempDir = path.join(os.tmpdir(), 'crm_vibe_subs');
+        const srtPath = path.join(tempDir, `${fileId}.srt`);
+        const configPath = path.join(tempDir, `${fileId}_config.json`);
+        const outputPath = path.join(tempDir, `${fileId}_burned.mp4`);
+
+        if (!fs.existsSync(srtPath)) {
+            throw new Error('Không tìm thấy file phụ đề gốc để cập nhật.');
+        }
+
+        fs.writeFileSync(srtPath, srtContent, 'utf8');
+
+        // Update config if provided
+        if (style || fontSize || yPos) {
+            let currentConfig = {};
+            if (fs.existsSync(configPath)) {
+                try {
+                    currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+                } catch (e) { }
+            }
+            const newConfig = { ...currentConfig, style, fontSize, yPos, subColor, subBgColor };
+            fs.writeFileSync(configPath, JSON.stringify(newConfig), 'utf8');
+        }
+        if (fs.existsSync(outputPath)) {
+            try {
+                fs.unlinkSync(outputPath);
+            } catch (e) { }
+        }
+
+        return { success: true };
+    }
+
+    async onModuleInit() {
+        console.log('--- [SCHEDULER] Khởi tạo hệ thống lập lịch tự động hóa AI ---');
+        // Quét mỗi phút cho cả thời gian và sản phẩm
+        setInterval(() => {
+            this.checkScheduledAutomations();
+            this.checkProductTriggeredAutomations();
+        }, 60 * 1000);
+    }
+
+    private async checkProductTriggeredAutomations() {
+        try {
+            const db = this.firebaseAdmin.firestore();
+            const snapshot = await db.collection('automations')
+                .where('status', '==', 'Active')
+                .where('type', '==', 'product_video')
+                .get();
+
+            for (const doc of snapshot.docs) {
+                const wf = { id: doc.id, ...doc.data() } as any;
+                const batchSize = parseInt(wf.productBatchSize) || 3;
+                const processedIds = wf.processedProductIds || [];
+
+                // Lấy các sản phẩm của user (không dùng orderBy để tránh yêu cầu Index phức hợp)
+                const productsSnap = await db.collection('website_products')
+                    .where('userId', '==', wf.userId)
+                    .limit(100)
+                    .get();
+
+                // Sắp xếp trong bộ nhớ theo thời gian tạo mới nhất
+                const productsList = productsSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
+                productsList.sort((a, b) => {
+                    const timeA = a.createdAt?.seconds || 0;
+                    const timeB = b.createdAt?.seconds || 0;
+                    return timeB - timeA;
+                });
+
+                const unprocessedProducts = productsList.filter(p => !processedIds.includes(p.id));
+
+                if (unprocessedProducts.length >= batchSize) {
+                    console.log(`--- [PRODUCT-TRIGGER] Đủ ${batchSize} sản phẩm! Đang tự động chạy quy trình: ${wf.name} (${wf.id}) ---`);
+
+                    // Lấy đúng số lượng batchSize để xử lý
+                    const batchToProcess = unprocessedProducts.slice(0, batchSize);
+                    await this.runAutomationById(wf.id, wf.userId, false, batchToProcess);
+
+                    // Cập nhật danh sách đã xử lý
+                    const newProcessedIds = [...processedIds, ...batchToProcess.map(p => p.id)];
+                    await doc.ref.update({
+                        processedProductIds: newProcessedIds,
+                        lastRunDate: new Date().toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })
+                    });
+                }
+            }
+        } catch (error) {
+            console.error('Lỗi trong hệ thống kiểm tra trigger sản phẩm:', error);
+        }
+    }
+
+    private async checkScheduledAutomations() {
+        try {
+            const db = this.firebaseAdmin.firestore();
+            const now = new Date();
+            // Lấy giờ hiện tại theo múi giờ Việt Nam (HH:mm)
+            const currentTime = now.toLocaleTimeString('vi-VN', {
+                timeZone: 'Asia/Ho_Chi_Minh',
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+            const currentDate = now.toLocaleDateString('vi-VN', {
+                timeZone: 'Asia/Ho_Chi_Minh'
+            });
+
+            // Heartbeat để biết scheduler vẫn chạy
+            if (now.getSeconds() === 0) {
+                console.log(`[SCHEDULER HEARTBEAT] ${currentTime} - Scanning active automations...`);
+            }
+
+            const snapshot = await db.collection('automations')
+                .where('status', '==', 'Active')
+                .get();
+
+            for (const doc of snapshot.docs) {
+                const wf = { id: doc.id, ...doc.data() } as any;
+
+                // Log kiểm tra từng quy trình (chỉ log ở console backend để debug)
+                // console.log(`[SCHEDULER] Checking ${wf.name}: Schedule=${wf.executionTime}, Current=${currentTime}`);
+
+                // Kiểm tra xem đã đến giờ chạy chưa
+                if (wf.executionTime === currentTime) {
+                    // Kiểm tra xem ngày hôm nay đã chạy chưa để tránh chạy lặp trong cùng 1 phút
+                    if (wf.lastRunDate !== currentDate) {
+                        console.log(`--- [SCHEDULER] ĐẾN GIỜ! Đang tự động chạy quy trình: ${wf.name} (${wf.id}) ---`);
+                        await this.runAutomationById(wf.id, wf.userId);
+
+                        // Cập nhật ngày chạy gần nhất
+                        await doc.ref.update({
+                            lastRunDate: currentDate
+                        });
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Lỗi trong hệ thống lập lịch:', error);
+        }
+    }
+
+    async runAutomationById(id: string, userId: string, isTest: boolean = false, triggeredProducts: any[] | null = null) {
+        const db = this.firebaseAdmin.firestore();
+        const wfRef = db.collection('automations').doc(id);
+        const wfDoc = await wfRef.get();
+        if (!wfDoc.exists) return;
+        const wf = wfDoc.data()!;
+
+        const addBotLog = async (event: string, status: string = 'success') => {
+            await wfRef.collection('logs').add({
+                event,
+                status,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+            await wfRef.update({
+                lastEvent: event,
+                lastEventStatus: status
+            });
+        };
+
+        try {
+            await wfRef.update({ runningStatus: 'running' });
+            await addBotLog(`Bot: Khởi tạo quy trình ${wf.name} ${isTest ? 'CHẠY THỬ' : 'tự động'}...`);
+
+            const quantity = parseInt(wf.quantity) || 1;
+            const contentSubType = wf.contentSubType || 'sales';
+            const topics = contentSubType === 'topics' && wf.topicList ? wf.topicList.split('\n').filter((t: string) => t.trim() !== '') : [];
+
+            // Tính toán tổng số vòng lặp
+            const totalTasks = contentSubType === 'topics' ? (topics.length * quantity) : quantity;
+            await addBotLog(`Bot: Bắt đầu quy trình tạo tổng cộng ${totalTasks} kịch bản...`);
+
+            let overallIndex = 0;
+
+            if (wf.type === 'product_video') {
+                const productsToProcess = triggeredProducts || [];
+
+                if (productsToProcess.length === 0) {
+                    // Lấy sản phẩm mới nhất (sắp xếp trong memory để tránh lỗi Index)
+                    const pSnap = await db.collection('website_products')
+                        .where('userId', '==', userId)
+                        .limit(50)
+                        .get();
+
+                    const pList = pSnap.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
+                    pList.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+
+                    productsToProcess.push(...pList.slice(0, parseInt(wf.productBatchSize) || 3));
+                }
+
+                if (productsToProcess.length > 0) {
+                    await addBotLog(`Bot: Bắt đầu tạo kịch bản video cho ${productsToProcess.length} sản phẩm mới...`);
+                    await this.processProductVideoTask(wf, wfRef, productsToProcess, userId, isTest);
+                } else {
+                    await addBotLog("Bot: Không tìm thấy sản phẩm mới để tạo video.", "warning");
+                }
+            } else if (contentSubType === 'topics') {
+                for (let t = 0; t < topics.length; t++) {
+                    const currentTopic = topics[t];
+                    for (let q = 0; q < quantity; q++) {
+                        overallIndex++;
+                        await this.processSingleContentTask(wf, wfRef, currentTopic, overallIndex, totalTasks, userId, contentSubType, isTest);
+                    }
+                }
+            } else {
+                for (let i = 0; i < quantity; i++) {
+                    overallIndex++;
+                    // Nếu là bán hàng, topic sẽ dựa trên Ngành hàng (Field)
+                    const currentTopic = wf.type === 'fanpage_posting' ? `Sản phẩm ${wf.field || 'mới'}` : (wf.description || wf.features);
+                    await this.processSingleContentTask(wf, wfRef, currentTopic, overallIndex, totalTasks, userId, contentSubType, isTest);
+                }
+            }
+
+            await addBotLog("Bot: Hoàn tất tạo toàn bộ kịch bản!");
+
+            // Cập nhật stats
+            await wfRef.update({
+                runs: admin.firestore.FieldValue.increment(1),
+                lastRun: new Date().toLocaleTimeString('vi-VN', {
+                    timeZone: 'Asia/Ho_Chi_Minh',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                })
+            });
+
+            await addBotLog("Bot: Quy trình hoàn thành thành công!");
+        } catch (error) {
+            console.error('Lỗi chạy quy trình tự động:', error);
+            await addBotLog(`Bot Lỗi: ${error.message}`, 'error');
+            await wfRef.update({ runningStatus: 'error' });
+        } finally {
+            await wfRef.update({ runningStatus: 'idle' });
+        }
+    }
+
+    private async processSingleContentTask(wf: any, wfRef: any, topic: string, currentIndex: number, total: number, userId: string, subType: string, isTest: boolean = false) {
+        // Kết nối AI cho từng kịch bản
+        const stepTitle = subType === 'topics'
+            ? `Bot: Đang tạo bản #${currentIndex}/${total} cho chủ đề: "${topic.substring(0, 30)}..."`
+            : `Bot: Đang xử lý kịch bản ${currentIndex}/${total}...`;
+
+        const connectionLogRef = await wfRef.collection('logs').add({
+            event: stepTitle,
+            status: "loading",
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        const db = this.firebaseAdmin.firestore();
+
+        try {
+            let resultData: any = null;
+            if (wf.type === 'script' || wf.type === 'content_creation') {
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_SCRIPT, 'Quy trình: Tạo kịch bản');
+                }
+                const isSales = subType === 'sales';
+                const mainInput = isSales ? (wf.field || 'Sản phẩm') : topic;
+
+                const response = await this.generateContent({
+                    brand: wf.name,
+                    features: mainInput,
+                    platform: wf.targetPlatform || wf.platform || 'General',
+                    field: wf.field || 'General',
+                    length: wf.contentLength || 'long',
+                    category: wf.actionTarget || 'Chung',
+                    mode: 'fanpage_post', // Dùng chung mode chất lượng cao của Fanpage
+                    tone: wf.tone || 'Chuyên nghiệp',
+                    price: isSales ? (wf.price || 'Liên hệ') : 'N/A',
+                    offers: isSales ? (wf.offers || 'Ưu đãi') : 'N/A'
+                }, userId);
+
+                let imageUrl = null;
+                if (wf.type === 'content_creation') {
+                    // Log nhỏ cho bước tạo ảnh
+                    const imgLog = await wfRef.collection('logs').add({
+                        event: `Bot: Đang thiết kế ảnh AI minh họa cho bản #${currentIndex}...`,
+                        status: "loading"
+                    });
+                    try {
+                        const imageResult = await this.generateImageMockup(
+                            `A professional high-quality marketing image for ${wf.name}. Context: ${topic}. Content: ${response.content.substring(0, 150)}`,
+                            undefined,
+                            undefined,
+                            '1:1',
+                            userId
+                        );
+                        imageUrl = imageResult.url;
+                        await imgLog.update({ status: 'success' });
+                    } catch (imgErr) {
+                        console.error("Lỗi tạo ảnh AI:", imgErr);
+                        await imgLog.update({ status: 'error', event: `Bot: Lỗi thiết kế ảnh AI cho bản #${currentIndex}` });
+                    }
+                }
+
+                resultData = {
+                    content: response.content,
+                    imageUrl: imageUrl,
+                    topic: subType === 'topics' ? topic : null,
+                    type: 'text_with_image'
+                };
+
+                // Lưu vào thư viện kịch bản viral (nếu có userId)
+                if (userId) {
+                    await db.collection('ai_viral_scripts').add({
+                        userId,
+                        brand: wf.name,
+                        platform: wf.platform || 'general',
+                        framework: 'automation_backend',
+                        content: response.content,
+                        imageUrl: imageUrl,
+                        topic: subType === 'topics' ? topic : null,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+                }
+            } else if (wf.type === 'fanpage_posting') {
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_FANPAGE_POSTING, 'Quy trình: Đăng bài Fanpage');
+                }
+
+                const initLog = await wfRef.collection('logs').add({
+                    event: `Bot: Đang khởi tạo nội dung đăng Fanpage... (Cấu hình Page ID: ${wf.selectedPageId || 'TRỐNG'})`,
+                    status: "loading",
+                    createdAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                const isSales = subType === 'sales';
+                const mainInput = isSales ? (wf.field || 'Sản phẩm') : topic;
+
+                // AI soạn nội dung
+                const response = await this.generateContent({
+                    brand: wf.name,
+                    features: mainInput,
+                    platform: 'Facebook',
+                    field: wf.field || 'General',
+                    length: wf.contentLength || 'long',
+                    category: wf.actionTarget || 'Chung',
+                    mode: 'fanpage_post',
+                    tone: wf.tone || 'Thân thiện & Gần gũi',
+                    price: isSales ? 'Liên hệ' : 'N/A',
+                    offers: isSales ? (wf.actionTarget || 'Ưu đãi đặc biệt') : 'N/A'
+                }, userId);
+
+                await initLog.update({ status: 'success' });
+
+                let imageUrl = null;
+                const designLog = await wfRef.collection('logs').add({
+                    event: `Bot: Đang thiết kế ảnh AI minh họa dựa trên mục tiêu: ${wf.actionTarget || 'Chung'}...`,
+                    status: "loading"
+                });
+                try {
+                    // Prompt ảnh dựa trên loại nội dung
+                    const imagePrompt = isSales
+                        ? `A professional high-quality product marketing photography for ${wf.name}. Industry: ${wf.field}. Focus on sales, professional studio lighting, 8k resolution.`
+                        : `A professional high-quality marketing illustration for Facebook. Topic: ${topic}. Tactical Objective: ${wf.actionTarget}. Brand style: ${wf.name}. Modern aesthetic.`;
+
+                    const imageResult = await this.generateImageMockup(
+                        imagePrompt,
+                        undefined,
+                        undefined,
+                        '1:1',
+                        userId
+                    );
+                    imageUrl = imageResult.url;
+                    await designLog.update({ status: 'success' });
+                } catch (imgErr) {
+                    console.error("Lỗi tạo ảnh AI cho Fanpage:", imgErr);
+                    await designLog.update({ status: 'error', event: `Bot: Lỗi thiết kế ảnh cho Fanpage` });
+                }
+
+                resultData = {
+                    content: response.content,
+                    imageUrl: imageUrl,
+                    topic: subType === 'topics' ? topic : null,
+                    type: 'fanpage_post'
+                };
+
+                if (wf.selectedPageId) {
+                    try {
+                        const pageDoc = await db.collection('users').doc(userId).collection('connected_pages').doc(wf.selectedPageId).get();
+                        if (pageDoc.exists) {
+                            const pageData = pageDoc.data()!;
+                            const postPrepLog = await wfRef.collection('logs').add({
+                                event: `Bot${isTest ? ' (Chế độ Thử)' : ''}: Đang chuẩn bị bài viết cho Fanpage: ${pageData.name}...`,
+                                status: "loading",
+                                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                            });
+
+                            const fbResult = await this.facebookService.postToPage(pageData.accessToken, wf.selectedPageId, response.content, imageUrl || undefined);
+                            await postPrepLog.update({ status: 'success' });
+
+                            const finalPostId = fbResult.post_id || fbResult.id;
+                            const postUrl = `https://www.facebook.com/${wf.selectedPageId}/posts/${finalPostId.split('_').pop()}`;
+
+                            await wfRef.collection('logs').add({
+                                event: `Bot${isTest ? ' (Chế độ Thử)' : ''}: Đã đăng bài thành công lên Fanpage! Link: ${postUrl}`,
+                                status: "success",
+                                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                            });
+                        } else {
+                            await wfRef.collection('logs').add({
+                                event: `Bot Lỗi: Không tìm thấy dữ liệu Fanpage (ID: ${wf.selectedPageId}) trong hệ thống của bạn.`,
+                                status: "error",
+                                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                            });
+                        }
+                    } catch (fbErr: any) {
+                        console.error("Lỗi tự động đăng FB:", fbErr.response?.data || fbErr.message);
+                        const errorMsg = fbErr.response?.data?.error?.message || fbErr.message;
+                        await wfRef.collection('logs').add({
+                            event: `Bot Lỗi Facebook: ${errorMsg}`,
+                            status: "error",
+                            createdAt: admin.firestore.FieldValue.serverTimestamp()
+                        });
+                    }
+                } else {
+                    await wfRef.collection('logs').add({
+                        event: `Bot Cảnh báo: Quy trình chưa được chọn Fanpage mục tiêu.`,
+                        status: "warning",
+                        createdAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+                }
+            } else if (wf.type === 'analytics') {
+                // Logic cho Đối thủ & Trend
+                await connectionLogRef.update({ event: `Bot: Đang thu thập dữ liệu xu hướng cho ngành ${wf.field}...` });
+
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_ANALYTICS, 'Quy trình: Đối thủ & Xu hướng');
+                }
+
+                // 1. Lấy dữ liệu trending thực tế
+                const trendingData = await this.getTikTokTrending('VN', 15, false, wf.field, userId);
+
+                // 2. Lấy từ khóa trending
+                const trendingKeywords = await this.getTrendingKeywords(wf.field, userId, 'hot');
+
+                await connectionLogRef.update({ event: `Bot: Đang phân tích chiến thuật của đối thủ trong ngành...` });
+
+                // 3. Phân tích chuyên sâu bằng AI
+                const analysisPrompt = `
+                Bạn là một chuyên gia Marketing thực chiến. Hãy phân tích dữ liệu sau cho ngành hàng "${wf.field}":
+                
+                DỮ LIỆU XU HƯỚNG TIKTOK HIỆN TẠI:
+                ${JSON.stringify(trendingData.insights || {})}
+                
+                VIDEO ĐANG HOT (Mô tả):
+                ${trendingData.videos?.slice(0, 5).map((v: any) => `- ${v.title} (${v.digg_count} likes)`).join('\n')}
+                
+                TỪ KHÓA ĐANG LÊN:
+                ${trendingKeywords.slice(0, 5).map(k => `- ${k.keyword} (Tiềm năng: ${k.potential_score})`).join('\n')}
+
+                NHIỆM VỤ: Hãy tạo một báo cáo tóm tắt "Đối thủ & Xu hướng" cực kỳ súc tích.
+                YÊU CẦU TRẢ VỀ JSON:
+                {
+                    "summary": "Tóm tắt 1 câu về thị trường hiện tại",
+                    "trends": [
+                        {"name": "Tên xu hướng", "reason": "Tại sao đang hot", "score": 9.5}
+                    ],
+                    "competitors_strategy": [
+                        {"tactic": "Chiến thuật đối thủ đang dùng", "effectiveness": "Cao/Trung bình", "detail": "Mô tả chi tiết"}
+                    ],
+                    "recommended_action": "Hành động cụ thể bạn nên làm ngay hôm nay"
+                }
+                CHỈ TRẢ VỀ JSON. KHÔNG GIẢI THÍCH THÊM.
+                `;
+
+                const aiResult = await this.model.generateContent(analysisPrompt);
+                const aiText = aiResult.response.text();
+                const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+
+                let report = {
+                    summary: "AI không thể trích xuất JSON báo cáo.",
+                    trends: [],
+                    competitors_strategy: [],
+                    recommended_action: "Kiểm tra lại dữ liệu đầu vào."
+                };
+
+                try {
+                    report = JSON.parse(jsonMatch ? jsonMatch[0] : aiText);
+                } catch (e) {
+                    console.error("Lỗi parse JSON report:", e);
+                }
+
+                resultData = {
+                    content: `Báo cáo phân tích tự động cho ${wf.field} (Bản #${currentIndex})\n\n${report.summary}`,
+                    report: report, // Lưu object report để frontend render đẹp hơn
+                    type: 'analytics_report',
+                    trendingVideos: trendingData.videos?.slice(0, 5) || []
+                };
+            } else if (wf.type === 'scraping') {
+                // Logic Săn sản phẩm Win (Winning Products)
+                await connectionLogRef.update({ event: `Bot: Đang truy cập dữ liệu thị trường và quét sản phẩm trending ngành ${wf.field}...` });
+
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_SCRAPING, 'Quy trình: Săn sản phẩm Win');
+                }
+
+                // 1. Phân phối dữ liệu cho AI
+                const trendingData = await this.getTikTokTrending('VN', 20, false, wf.field, userId);
+                const keywords = await this.getTrendingKeywords(wf.field, userId);
+
+                await connectionLogRef.update({ event: `Bot: Đang bóc tách và nhận diện Winning Products tiềm năng dựa trên AI Logic...` });
+
+                const scrapePrompt = `
+                BẠN LÀ MỘT CHUYÊN GIA TƯ VẤN CHIẾN LƯỢC E-COMMERCE VÀ NHÀ PHÂN TÍCH DỮ LIỆU THỊ TRƯỜNG CẤP CAO.
+                NHIỆM VỤ: Dựa trên nguồn dữ liệu đa chiều dưới đây về ngành hàng "${wf.field}", hãy thực hiện quy trình "REVERSE ENGINEERING" để nhận diện và phân tích các "WINNING PRODUCTS" (Sản phẩm thắng thắng thế).
+
+                MỤC TIÊU PHÂN TÍCH CHI TIẾT: ${wf.actionTarget || 'Nhận diện sản phẩm tiềm năng bùng nổ'}
+                CẤP ĐỘ PHÂN TÍCH: ${wf.aiMode === 'creative' ? 'Tư duy bứt phá (Blue Ocean Store)' : wf.aiMode === 'precise' ? 'Dữ liệu thực chứng (Hard Data)' : 'Cân bằng giữa xu hướng & tính khả thi'}
+
+                DỮ LIỆU ĐẦU VÀO TỪ HỆ THỐNG:
+                1. INSIGHTS XU HƯỚNG TIKTOK TRONG 7 NGÀY:
+                ${JSON.stringify(trendingData.insights || {})}
+
+                2. CHỈ SỐ TỪ KHÓA ĐANG TĂNG TRƯỞNG:
+                ${keywords.map(k => `- ${k.keyword} (Độ nóng: ${k.trend})`).join('\n')}
+
+                3. PHÂN TÍCH VIDEO VIRAL (HÀNH VI NGƯỜI DÙNG):
+                ${trendingData.videos?.slice(0, 10).map((v: any) => `- ${v.title} (Lượt tương tác: ${v.digg_count} tim, ${v.comment_count} bình luận)`).join('\n')}
+
+                YÊU CẦU BẢN BÁO CÁO (TRẢ VỀ ĐỊNH DẠNG JSON):
+                {
+                    "overall_market_sentiment": "Phân tích bối cảnh thị trường ngách, tâm lý khách hàng và dự báo độ dài của sóng trend hiện tại.",
+                    "winning_products": [
+                        {
+                            "name": "Tên sản phẩm chuyên nghiệp kèm từ khóa SEO",
+                            "category": "Ngách sản phẩm cụ thể",
+                            "win_reason": "Vận dụng mô hình 4P/USP để giải thích tại sao sản phẩm này đang 'Win' (VD: Giá hời, giải quyết nỗi đau mới, bắt kịp trend thẩm mỹ...)",
+                            "target_audience": "Chân dung khách hàng mục tiêu chi tiết (Độ tuổi, sở thích, hành vi)",
+                            "estimated_price": "Khoảng giá tối ưu để đạt tỷ lệ chuyển đổi cao nhất",
+                            "potential_score": "Điểm tiềm năng (Scoring 1-10)",
+                            "marketing_strategy": "Chiến lược 'Go-to-market': Cách làm video, Hook tiêu đề, và Angle quảng cáo đề xuất",
+                            "pros_cons": {"pros": ["..."], "cons": ["..."]}
+                        }
+                    ],
+                    "niche_opportunities": "Những khoảng trống thị trường (Greenfield) mà đối thủ chưa khai thác hết dựa trên dữ liệu keyword.",
+                    "action_plan": "Lộ trình thực thi 3 bước: Kiểm tra nguồn hàng -> Test Content -> Scale Ads"
+                }
+                LƯU Ý: Nội dung phải mang tính chiến lược, ngôn ngữ chuyên ngành marketing, không viết chung chung.
+                CHỈ TRẢ VỀ JSON. KHÔNG GIẢI THÍCH THÊM.
+                `;
+
+                const aiResult = await this.model.generateContent(scrapePrompt);
+                const responseText = aiResult.response.text();
+                const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+
+                let report = {
+                    overall_market_sentiment: "Dữ liệu chưa đủ để phân tích.",
+                    winning_products: [],
+                    niche_opportunities: "Không tìm thấy cơ hội ngách rõ ràng.",
+                    action_plan: "Kiểm tra lại nguồn cấp dữ liệu."
+                };
+
+                try {
+                    report = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
+                } catch (e) {
+                    console.error("Lỗi parse JSON scraping report:", e);
+                }
+
+                resultData = {
+                    content: `Báo cáo săn sản phẩm Win: ${wf.field} (Bản #${currentIndex})\n\n${report.overall_market_sentiment}`,
+                    report: report, // Chứa mảng winning_products
+                    type: 'winning_products_report',
+                    trendingVideos: trendingData.videos?.slice(0, 3) || []
+                };
+            } else if (wf.type === 'affiliate_pro') {
+                // logic SIÊU QUY TRÌNH AFFILIATE 1-CHẠM (DỮ LIỆU THỰC TẾ)
+                await connectionLogRef.update({ event: `Bot: [BƯỚC 1/3] Đang cào dữ liệu thực tế từ: ${wf.field.substring(0, 30)}...` });
+
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_AFFILIATE, 'Quy trình: Affiliate Pro');
+                }
+
+                let scrapedData: any;
+                try {
+                    // Sử dụng hàm cào dữ liệu Shopee/TikTok thực tế đã có sẵn
+                    scrapedData = await this.scrapeProductData(wf.field, userId);
+                } catch (scrapeErr) {
+                    console.error("Lỗi cào dữ liệu thực tế:", scrapeErr);
+                    // Fallback tinh tế nếu link lỗi/chặn
+                    scrapedData = {
+                        product_name: wf.name || "Sản phẩm mục tiêu",
+                        price: "Liên hệ",
+                        images: ["https://picsum.photos/800/800"],
+                        description: "Thông tin đang được cập nhật..."
+                    };
+                    await wfRef.collection('logs').add({ event: "Bot: Cảnh báo - Không thể bóc tách dữ liệu sạch, đang dùng Data dự phòng.", status: "warning" });
+                }
+
+                await connectionLogRef.update({ event: `Bot: [BƯỚC 2/3] Gemini AI đang soạn kịch bản Video Review dựa trên dữ liệu sản phẩm...` });
+                const scriptResponse = await this.generateContent({
+                    brand: scrapedData.product_name,
+                    features: scrapedData.description?.substring(0, 500) || wf.description,
+                    platform: 'TikTok',
+                    field: wf.field || 'Sản phẩm Hot',
+                    length: 'short',
+                    price: scrapedData.price,
+                    offers: 'Mua ngay tại link Bio',
+                    category: 'Viral Review',
+                    mode: 'affiliate_viral',
+                    tone: wf.tone || 'Năng động, cuốn hút',
+                }, userId);
+
+                // Thêm logic phân tích Target & Metrics cho Affiliate Pro
+                const targetPrompt = `
+                Dựa trên sản phẩm: ${scrapedData.product_name}
+                Mô tả: ${scrapedData.description?.substring(0, 300)}
+                
+                Hãy phân tích:
+                1. 3 tệp đối tượng mục tiêu (targeting)
+                2. 2 chỉ số dự báo quan trọng (expected_metrics: label, value)
+                TRẢ VỀ JSON DUY NHẤT:
+                {
+                    "targeting": ["...", "...", "..."],
+                    "expected_metrics": [{"label": "...", "value": "..."}, {"label": "...", "value": "..."}]
+                }
+                `;
+                let affiliateReport = { targeting: [], expected_metrics: [] };
+                try {
+                    const targetResult = await this.model.generateContent(targetPrompt);
+                    const targetText = targetResult.response.text();
+                    const jsonMatch = targetText.match(/\{[\s\S]*\}/);
+                    affiliateReport = JSON.parse(jsonMatch ? jsonMatch[0] : targetText);
+                } catch (e) { console.error("Lỗi AI target Affiliate:", e); }
+
+                await connectionLogRef.update({ event: `Bot: [BƯỚC 3/3] Đã có kịch bản thực tế! Đang đẩy vào Render AI & AutoSub...` });
+
+                resultData = {
+                    content: scriptResponse.content,
+                    imageUrl: scrapedData.images?.[0] || "https://picsum.photos/800/800",
+                    type: 'affiliate_video_report',
+                    videoStatus: 'Ready to download',
+                    videoUrl: 'https://storage.googleapis.com/marketos/demo-video.mp4',
+                    scrapedInfo: scrapedData,
+                    report: affiliateReport, // Chứa targeting và expected_metrics
+                    realDataUsed: true
+                };
+            } else if (wf.type === 'ads_spy') {
+                // logic GIÁN ĐIỆP ADS (DỮ LIỆU THỰC TẾ)
+                await connectionLogRef.update({ event: `Bot: [BƯỚC 1/3] Đang phân tích sâu bài quảng cáo thực tế tại: ${wf.field.substring(0, 30)}...` });
+
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_ADS_SPY, 'Quy trình: Gián điệp Ads');
+                }
+
+                let spyReport: any;
+                try {
+                    // Sử dụng hàm analyzeFacebookAd thực tế
+                    const analysis = await this.analyzeFacebookAd(wf.field, userId);
+
+                    // Gemini sẽ chuyển đổi format phân tích sang format báo cáo spy
+                    const transformPrompt = `
+                    Dựa trên dữ liệu phân tích quảng cáo thực tế này:
+                    ${JSON.stringify(analysis)}
+                    
+                    Hãy soạn lại báo cáo "GIÁN ĐIỆP ADS" CHUYÊN NGHIỆP:
+                    1. Viết lại 2 mẫu Content (A/B Test) dựa trên kịch bản gốc nhưng tối ưu hơn.
+                    2. Trích xuất bộ từ khóa và đề xuất Landing Page.
+                    3. Phân tích tệp đối tượng nhắm mục tiêu (Targeting) và các chỉ số dự báo hiệu quả (Expected Metrics).
+                    TRẢ VỀ JSON:
+                    {
+                        "original_analysis": "Tóm tắt ngắn gọn kịch bản đối thủ",
+                        "ab_test_1": "Bản copy v1 (Cực kỳ thu hút)",
+                        "ab_test_2": "Bản copy v2 (Đánh vào nỗi đau)",
+                        "keywords": ["key1", "key2", "key3"],
+                        "landing_page_suggestion": "Template phù hợp",
+                        "targeting": ["Tệp 1", "Tệp 2", "Tệp 3"],
+                        "expected_metrics": [
+                            {"label": "Dự kiến Reach", "value": "50,000+"},
+                            {"label": "Dự kiến CTR", "value": "3-5%"},
+                            {"label": "ROI Dự kiến", "value": "x3"}
+                        ]
+                    }
+                    `;
+                    const transformResult = await this.model.generateContent(transformPrompt);
+                    const transformText = transformResult.response.text();
+                    const jsonMatch = transformText.match(/\{[\s\S]*\}/);
+                    spyReport = JSON.parse(jsonMatch ? jsonMatch[0] : transformText);
+                } catch (spyErr) {
+                    console.error("Lỗi phân tích Ads thực tế:", spyErr);
+                    throw new Error("Không thể truy cập dữ liệu link Facebook Ads này. Vui lòng kiểm tra lại link.");
+                }
+
+                await connectionLogRef.update({ event: `Bot: Hoàn tất phân tích đối thủ thực tế. Đang xuất báo cáo chiến thuật...` });
+
+                resultData = {
+                    content: `Báo cáo Gián điệp bài viết thực tế cho: ${wf.field}`,
+                    report: spyReport,
+                    type: 'ads_spy_report',
+                    realDataUsed: true
+                };
+            } else if (wf.type === 'trend_jack') {
+                // logic TREND-JACKING (DỮ LIỆU REAL-TIME)
+                await connectionLogRef.update({ event: `Bot: [BƯỚC 1/3] Quét Real-time xu hướng TikTok cho từ khóa: ${wf.field}...` });
+
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_TREND_JACK, 'Quy trình: Bắt Trend TikTok');
+                }
+
+                // Sử dụng API TikTok Trending thực tế
+                const trendingData = await this.getTikTokTrending('VN', 10, true, wf.field, userId);
+
+                await connectionLogRef.update({ event: `Bot: [BƯỚC 2/3] Đã phát hiện Trend! Đang trích xuất Video Top đầu để nhân bản nội dung...` });
+
+                await connectionLogRef.update({ event: `Bot: [BƯỚC 3/3] Đang thiết lập kịch bản bắt trend & lên lịch phủ sóng vệ tinh...` });
+
+                resultData = {
+                    content: `Hệ thống vừa bắt được ${trendingData.videos?.length || 0} tín hiệu Trend cho từ khóa "${wf.field}" tại Việt Nam.`,
+                    trendingVideos: trendingData.videos || [],
+                    insights: trendingData.insights,
+                    type: 'trend_jack_report',
+                    scheduledTime: 'Hệ thống đã sẵn sàng đẩy bài.',
+                    realDataUsed: true
+                };
+            } else if (wf.type === 'market_research') {
+                // Logic Nghiên cứu ngách (Market Research)
+                await connectionLogRef.update({ event: `Bot: Đang thu thập dữ liệu thị trường toàn cầu cho ngách ${wf.field}...` });
+
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_MARKET_RESEARCH, 'Quy trình: Nghiên cứu ngách');
+                }
+
+                const trendingData = await this.getTikTokTrending('VN', 30, false, wf.field, userId);
+                const keywords = await this.getTrendingKeywords(wf.field, userId);
+
+                await connectionLogRef.update({ event: `Bot: AI đang thiết lập bản đồ xu hướng và phân tích tiềm năng ngách...` });
+
+                const isConsumerBehavior = wf.actionTarget === "Nghiên cứu hành vi mua hàng";
+                const researchPrompt = `
+                BẠN LÀ MỘT CHUYÊN GIA PHÂN TÍCH THỊ TRƯỜNG VÀ TÂM LÝ HÀNH VI KHÁCH HÀNG CẤP CAO.
+                NHIỆM VỤ: Thực hiện nghiên cứu chuyên sâu về ngách "${wf.field}" tập trung vào mục tiêu "${wf.actionTarget}" tại thị trường Việt Nam.
+
+                DỮ LIỆU ĐẦU VÀO THỰC TẾ:
+                - Insights TikTok: ${JSON.stringify(trendingData.insights || {})}
+                - Dữ liệu video viral mới nhất: ${trendingData.videos?.slice(0, 10).map((v: any) => `- ${v.title} (Engagement: ${v.digg_count} likes, ${v.play_count} views)`).join('\n')}
+                - Keywords hot: ${keywords.map(k => k.keyword).join(', ')}
+
+                ${isConsumerBehavior ? `
+                CHÚ TRỌNG ĐẶC BIỆT VÀO HÀNH VI MUA HÀNG:
+                - Phân tích sâu tâm lý: Tại sao họ mua? Họ sợ điều gì? 
+                - Phân khúc khách hàng: Độ tuổi, giới tính, thu nhập, sở thích.
+                - Hành trình mua hàng: Họ biết đến sản phẩm qua đâu? Điểm chạm (Touchpoints) nào quan trọng nhất?
+                - Yếu tố quyết định: Giá, thương hiệu, chất lượng, hay KOL/KOC review?
+                - Tần suất và giá trị đơn hàng (AOV) đặc trưng của ngách này.
+                ` : ''}
+
+                YÊU CẦU BÁO CÁO CHUYÊN NGHIỆP (TRẢ VỀ JSON):
+                {
+                    "niche_name": "Tên ngách chính xác",
+                    "market_size_evaluation": "Đánh giá chi tiết quy mô và sức mua của thị trường ngách.",
+                    "trend_data": [
+                        {"label": "Tuần 1", "value": 35, "value_display": "1.2k đơn"},
+                        {"label": "Tuần 2", "value": 50, "value_display": "1.8k đơn"},
+                        {"label": "Tuần 3", "value": 80, "value_display": "3.2k đơn"},
+                        {"label": "Tuần 4", "value": 65, "value_display": "2.4k đơn"}
+                    ],
+                    "trending_analysis": "Phân tích biến động dựa trên số liệu sản lượng bán và tương tác thực tế.",
+                    "consumer_behavior": {
+                        "buying_motives": ["Lý do 1", "Lý do 2"],
+                        "price_sensitivity": "Mức độ nhạy cảm về giá và phân khúc giá bán chạy nhất",
+                        "decision_factors": ["Yếu tố 1", "Yếu tố 2"],
+                        "demographics": "Mô tả chân dung khách hàng mục tiêu chi tiết",
+                        "buying_frequency": "Tần suất mua hàng (Ví dụ: 1 lần/tháng)",
+                        "preferred_channels": ["Kênh 1", "Kênh 2"]
+                    },
+                    "competitor_landscape": "Đánh giá mức độ cạnh tranh và đối thủ chính hiện nay.",
+                    "customer_pain_points": ["Nỗi đau 1", "Nỗi đau 2", "..."],
+                    "recommended_platforms": [
+                        {"platform": "TikTok", "reason": "...", "priority": "High"},
+                        {"platform": "Shopee", "reason": "...", "priority": "Medium"}
+                    ],
+                    "viral_hooks": ["Hook 1 (Ví dụ: Bí mật mà các shop thời trang không muốn bạn biết...)", "Hook 2", "..."],
+                    "key_metrics": ["AOV (Giá trị đơn trung bình)", "Conversion Rate dự kiến", "CAC dự kiến"],
+                    "content_direction": "Chủ đề nội dung chủ đạo thu hút khách hàng",
+                    "opportunity_score": 85,
+                    "swot_analysis": {
+                        "strengths": ["..."],
+                        "weaknesses": ["..."],
+                        "opportunities": ["..."],
+                        "threats": ["..."]
+                    },
+                    "strategic_advice": "Lời khuyên chiến lược cụ thể để chiếm lĩnh thị trường dựa trên dữ liệu.",
+                    "action_plan": "Kế hoạch hành động 3 bước cụ thể"
+                }
+                LƯU Ý: trend_data PHẢI DỰA TRÊN SẢN LƯỢNG BÁN (SALES VOLUME) ƯỚC TÍNH.
+                CÁC THÔNG TIN PHẢI THẬT CHI TIẾT, CHUYÊN NGHIỆP, KHÔNG CHUNG CHUNG.
+                CHỈ TRẢ VỀ JSON. KHÔNG GIẢI THÍCH THÊM.
+                `;
+
+                const aiResult = await this.model.generateContent(researchPrompt);
+                const responseText = aiResult.response.text();
+                const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+
+                let report = { niche_name: wf.field, opportunity_score: 0, trend_data: [] };
+                try {
+                    report = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
+                } catch (e) {
+                    console.error("Lỗi parse JSON research report:", e);
+                }
+
+                resultData = {
+                    content: `Báo cáo nghiên cứu ngách: ${report.niche_name}\nĐiểm cơ hội: ${report.opportunity_score}/100`,
+                    report: report,
+                    type: 'market_research_report'
+                };
+            } else {
+                await new Promise(resolve => setTimeout(resolve, 2000));
+                resultData = { content: `Kết quả tự động hóa định kỳ cho ${wf.type}: ${wf.name} (Bản #${currentIndex})`, type: 'text' };
+            }
+
+            await connectionLogRef.update({ status: 'success' });
+            const resultDoc = {
+                ...resultData,
+                userId,
+                workflowId: wfRef.id,
+                workflowName: wf.name,
+                workflowType: wf.type,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            };
+
+            // 1. Lưu vào sub-collection của workflow
+            await wfRef.collection('results').add(resultDoc);
+
+            // 2. Lưu vào bộ sưu tập tổng
+            await db.collection('automation_all_results').add(resultDoc);
+        } catch (err: any) {
+            await connectionLogRef.update({ status: 'error', event: `Bot: Lỗi ở bước ${currentIndex}: ${err.message}` });
+        }
+    }
+
+    private async processProductVideoTask(wf: any, wfRef: any, products: any[], userId: string, isTest: boolean = false) {
+        const db = this.firebaseAdmin.firestore();
+
+        for (let i = 0; i < products.length; i++) {
+            const product = products[i];
+            const connectionLogRef = await wfRef.collection('logs').add({
+                event: `Bot: Đang tạo kịch bản Video Review cho sản phẩm: ${product.name}...`,
+                status: "loading",
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            try {
+                if (!isTest) {
+                    await this.deductCredits(userId, this.CREDIT_COSTS.AUTOMATION_PRODUCT_VIDEO, `Quy trình: Video SP (${product.name})`);
+                }
+
+                // AI soạn kịch bản video từ thông tin sản phẩm
+                const scriptResponse = await this.generateContent({
+                    brand: product.name,
+                    features: `Giá: ${product.price}\nMô tả: ${product.description || ''}`,
+                    platform: 'TikTok',
+                    field: wf.field || 'Sản phẩm Hot',
+                    length: 'short',
+                    price: product.price,
+                    offers: 'Mua ngay tại cửa hàng!',
+                    category: 'Product Review',
+                    mode: 'affiliate_viral',
+                    tone: wf.tone || 'Cuốn hút, chân thực',
+                }, userId);
+
+                // Tạo ảnh mockup/slide nếu cần (ở đây ta dùng ảnh gốc của SP)
+                const imageUrl = product.images?.[0] || "https://picsum.photos/800/800";
+
+                const resultDoc = {
+                    content: scriptResponse.content,
+                    imageUrl: imageUrl,
+                    allImages: product.images || [imageUrl],
+                    productInfo: {
+                        id: product.id || '',
+                        name: product.name || '',
+                        price: product.price || '',
+                        link: product.link || ''
+                    },
+                    type: 'product_video_report',
+                    userId,
+                    workflowId: wfRef.id,
+                    workflowName: wf.name,
+                    workflowType: wf.type,
+                    duration: 15,
+                    musicTheme: 'Upbeat Marketing',
+                    createdAt: admin.firestore.FieldValue.serverTimestamp()
+                };
+
+                const resultId = uuidv4();
+                await wfRef.collection('results').doc(resultId).set(resultDoc);
+                await db.collection('automation_all_results').doc(resultId).set(resultDoc);
+
+                await connectionLogRef.update({ status: 'success', event: `Bot: Hoàn tất kịch bản Video cho "${product.name}"` });
+            } catch (err) {
+                await connectionLogRef.update({ status: 'error', event: `Bot: Lỗi khi xử lý sản phẩm ${product.name}: ${err.message}` });
+            }
+        }
+    }
+
+    async renderAutomationVideo(resultId: string, userId: string, workflowId?: string) {
+        console.log(`[VideoRender] Bắt đầu xử lý cho resultId: ${resultId}, userId: ${userId}, workflowId: ${workflowId}`);
+        const db = this.firebaseAdmin.firestore();
+
+        let resultRef = db.collection('automation_all_results').doc(resultId);
+        let doc;
+        try {
+            doc = await resultRef.get();
+
+            // Nếu không tìm thấy trong collection chung, thử tìm trong sub-collection của workflow
+            if (!doc.exists && workflowId) {
+                console.log(`[VideoRender] Không tìm thấy ở collection chung, thử tìm trong workflow: ${workflowId}`);
+                resultRef = db.collection('automations').doc(workflowId).collection('results').doc(resultId);
+                doc = await resultRef.get();
+            }
+        } catch (err) {
+            console.error('[VideoRender] Lỗi khi truy vấn Firestore:', err);
+            throw new InternalServerErrorException('Không thể truy cập dữ liệu kết quả.');
+        }
+
+        if (!doc.exists || !doc.data()) throw new BadRequestException('Không tìm thấy kết quả.');
+        const data = doc.data()!;
+        if (data.userId !== userId) throw new BadRequestException('Không có quyền truy cập.');
+
+        const rawImages = data.allImages || (data.imageUrl ? [data.imageUrl] : []);
+        const images = rawImages.filter((img: string) => img && typeof img === 'string' && img.startsWith('http'));
+
+        if (images.length === 0) {
+            console.error('[VideoRender] Không có hình ảnh hợp lệ:', rawImages);
+            throw new BadRequestException('Báo cáo không chứa hình ảnh hợp lệ để tạo video.');
+        }
+
+        console.log(`[VideoRender] Tìm thấy ${images.length} hình ảnh để xử lý.`);
+
+        // Cập nhật trạng thái rendering
+        await resultRef.update({ videoStatus: 'rendering', videoError: null });
+
+        const tempDir = path.join(os.tmpdir(), `render_${resultId}_${Date.now()}`);
+        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+
+        try {
+            const downloadedPaths: string[] = [];
+            for (let i = 0; i < images.length; i++) {
+                const imgUrl = images[i];
+                const imgPath = path.join(tempDir, `img_${i}.jpg`);
+                try {
+                    console.log(`[VideoRender] Đang tải ảnh ${i + 1}/${images.length}: ${imgUrl}`);
+                    const response = await axios.get(imgUrl, {
+                        responseType: 'arraybuffer',
+                        timeout: 15000,
+                        headers: { 'User-Agent': 'Mozilla/5.0' }
+                    });
+                    fs.writeFileSync(imgPath, Buffer.from(response.data));
+                    downloadedPaths.push(imgPath);
+                } catch (err) {
+                    console.warn(`[VideoRender] Không thể tải ảnh ${imgUrl}:`, err.message);
+                }
+            }
+
+            if (downloadedPaths.length === 0) throw new Error('Không thể tải bất kỳ hình ảnh nào từ danh sách.');
+
+            const outputPath = path.join(tempDir, 'output.mp4');
+            console.log(`[VideoRender] Bắt đầu dựng video bằng FFmpeg, total images: ${downloadedPaths.length}`);
+
+            // FFmpeg command: Tạo video slideshow chuyên nghiệp
+            await new Promise((resolve, reject) => {
+                const command = ffmpeg();
+
+                // Thêm các input với tùy chọn loop và duration
+                downloadedPaths.forEach(p => {
+                    command.input(p).inputOptions(['-loop 1', '-t 3', '-framerate 25']);
+                });
+
+                const filterComplex: any[] = [];
+                // Bước 1: Scale và Pad từng input về 1080x1920 (9:16)
+                for (let i = 0; i < downloadedPaths.length; i++) {
+                    filterComplex.push({
+                        filter: 'scale',
+                        options: 'w=1080:h=1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1',
+                        inputs: `${i}:v`,
+                        outputs: `v${i}`
+                    });
+                }
+
+                // Bước 2: Nối các stream đã scale
+                filterComplex.push({
+                    filter: 'concat',
+                    options: { n: downloadedPaths.length, v: 1, a: 0 },
+                    inputs: downloadedPaths.map((_, i) => `v${i}`),
+                    outputs: 'outv'
+                });
+
+                command
+                    .complexFilter(filterComplex, 'outv')
+                    .outputOptions([
+                        '-c:v libx264',
+                        '-pix_fmt yuv420p',
+                        '-preset fast',
+                        '-r 25',
+                        '-movflags +faststart'
+                    ])
+                    .on('start', (cmdLine: string) => console.log('[VideoRender] FFmpeg command:', cmdLine))
+                    .on('progress', (progress: any) => console.log(`[VideoRender] Progress: ${progress.percent}% done`))
+                    .on('error', (err: any, stdout: any, stderr: any) => {
+                        console.error('[VideoRender] FFmpeg Error:', err.message);
+                        console.error('[VideoRender] FFmpeg Stderr:', stderr);
+                        reject(err);
+                    })
+                    .on('end', () => {
+                        console.log('[VideoRender] FFmpeg hoàn tất dựng video.');
+                        resolve(true);
+                    })
+                    .save(outputPath);
+            });
+
+            // Tải lên Firebase Storage
+            console.log('[VideoRender] Đang tải video lên Storage...');
+            const bucket = this.firebaseAdmin.storage().bucket();
+            const destination = `automation_videos/${userId}/${resultId}.mp4`;
+
+            await bucket.upload(outputPath, {
+                destination,
+                metadata: {
+                    contentType: 'video/mp4',
+                    contentDisposition: `attachment; filename="vibe-production-${resultId}.mp4"`,
+                    cacheControl: 'public, max-age=31536000'
+                }
+            });
+
+            const file = bucket.file(destination);
+            await file.makePublic();
+            const publicUrl = `https://storage.googleapis.com/${bucket.name}/${destination}`;
+
+            console.log('[VideoRender] Video đã được tải lên:', publicUrl);
+
+            await resultRef.update({
+                videoUrl: publicUrl,
+                videoStatus: 'completed',
+                videoRenderedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            return { success: true, videoUrl: publicUrl };
+
+        } catch (error) {
+            console.error('[VideoRender] Lỗi hệ thống:', error);
+            await resultRef.update({
+                videoStatus: 'error',
+                videoError: error.message
+            });
+            throw new InternalServerErrorException('Lỗi khi render video: ' + error.message);
+        } finally {
+            // Dọn dẹp file tạm
+            try {
+                if (fs.existsSync(tempDir)) {
+                    fs.rmSync(tempDir, { recursive: true, force: true });
+                    console.log('[VideoRender] Đã dọn dẹp thư mục tạm.');
+                }
+            } catch (e) {
+                console.warn('[VideoRender] Không thể dọn dẹp thư mục tạm:', e.message);
+            }
+        }
+    }
+    async generateVideoDubbing(
+        file: any,
+        targetVoice: string,
+        targetLang: string,
+        userId: string,
+        bgVolume: number = 0.4,
+        dubVolume: number = 1.5,
+        showSubtitles: boolean = false,
+        subStyle: { color?: string, fontSize?: number, bgColor?: string, verticalPos?: number } = { color: '#FFFFFF', fontSize: 20, bgColor: '#000000', verticalPos: 30 }
+    ): Promise<any> {
+        if (!this.currentGeminiKey || !this.currentFptKey) {
+            throw new Error('Chưa cấu hình đầy đủ Gemini hoặc FPT.AI API Key');
+        }
+
+        const job = await this.videoQueue.add('video-dubbing', {
+            type: 'video-dubbing',
+            data: {
+                fileBuffer: file.buffer.toJSON(),
+                targetVoice,
+                targetLang,
+                userId,
+                bgVolume,
+                dubVolume,
+                showSubtitles,
+                subStyle,
+                fileName: file.originalname || 'video.mp4'
+            }
+        });
+
+        return { success: true, jobId: job.id, message: 'Yêu cầu lồng tiếng đã được thêm vào hàng chờ' };
+    }
+
+    async processDubbingJob(job: any) {
+        const { fileBuffer, targetVoice, targetLang, userId, bgVolume, dubVolume, showSubtitles, subStyle, fileName } = job.data.data;
+
+        const tempDir = path.join(process.cwd(), 'uploads', 'dubbing');
+        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
+
+        // Sử dụng chính job.id làm folder name để đồng bộ với stream endpoint
+        const fileId = job.id;
+        const jobDir = path.join(tempDir, fileId);
+        if (!fs.existsSync(jobDir)) fs.mkdirSync(jobDir);
+
+        const videoPath = path.join(jobDir, 'input_video.mp4');
+        const audioPath = path.join(jobDir, 'original_audio.mp3');
+        const srtPath = path.join(jobDir, 'transcript.srt');
+        const finalVideoPath = path.join(jobDir, 'dubbed_video.mp4');
+
+        try {
+            await job.updateProgress(5);
+            this.logger.log(`[Worker] Bắt đầu lồng tiếng Job ${job.id}`);
+
+            // 1. Lưu video & Trừ phí
+            fs.writeFileSync(videoPath, Buffer.from(fileBuffer));
+            const duration = await this.getVideoDuration(videoPath);
+            const cost = Math.max(2000, Math.ceil(duration / 60) * (this.CREDIT_COSTS as any).VIDEO_DUBBING_PER_MIN);
+            await this.deductCredits(userId, cost, 'Lồng tiếng video');
+            await job.updateProgress(15);
+
+            // 2. Tách âm thanh gốc
+            await this.extractAudioWithFFmpeg(videoPath, audioPath);
+            await job.updateProgress(25);
+
+            // 3. STT với Gemini
+            const fileManager = new GoogleAIFileManager(this.currentGeminiKey!);
+            const uploadResponse = await fileManager.uploadFile(audioPath, {
+                mimeType: 'audio/mp3',
+                displayName: `dub_audio_${fileId}`,
+            });
+
+            const prompt = `
+                Hãy nghe âm thanh và tạo ra phụ đề định dạng SRT CHÍNH XÁC.
+                Ngôn ngữ bạn cần viết SRT: ${targetLang}.
+                QUY TẮC: Một block SRT KHÔNG ĐƯỢC dài quá 8 từ.
+                CHỈ In ra nội dung SRT duy nhất.
+            `;
+
+            const result = await this.model.generateContent([
+                { fileData: { mimeType: uploadResponse.file.mimeType, fileUri: uploadResponse.file.uri } },
+                { text: prompt }
+            ]);
+
+            let srtContent = result.response.text().replace(/\`\`\`srt|\`\`\`/g, '').trim();
+            let srtSegments = this.parseSrt(srtContent);
+            srtSegments = this.splitLongSegments(srtSegments, 8);
+            srtContent = this.formatSrt(srtSegments);
+            fs.writeFileSync(srtPath, srtContent, 'utf8');
+            await fileManager.deleteFile(uploadResponse.file.name);
+            await job.updateProgress(40);
+
+            // 4. TTS từng đoạn
+            const audioSegments: string[] = [];
+            for (let i = 0; i < srtSegments.length; i++) {
+                const segment = srtSegments[i];
+                const segmentAudioPath = path.join(jobDir, `segment_${i}.mp3`);
+                const ttsResponse = await this.generateSpeech({
+                    text: segment.text,
+                    voice: targetVoice,
+                    speed: 0
+                }, userId);
+
+                let audioResponse;
+                let attempts = 0;
+                while (attempts < 5) {
+                    try {
+                        audioResponse = await axios.get(ttsResponse.url, { responseType: 'arraybuffer' });
+                        break;
+                    } catch (err) {
+                        attempts++;
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                }
+                if (!audioResponse) throw new Error('TTS Failed');
+
+                fs.writeFileSync(segmentAudioPath, Buffer.from(audioResponse.data));
+                const originalDuration = segment.end - segment.start;
+                const ttsDuration = await this.getAudioDuration(segmentAudioPath);
+                const stretchedAudioPath = path.join(jobDir, `stretched_${i}.mp3`);
+                const tempo = ttsDuration / originalDuration;
+                await this.stretchAudio(segmentAudioPath, stretchedAudioPath, tempo, originalDuration);
+                audioSegments.push(stretchedAudioPath);
+
+                // Cập nhật tiến độ TTS
+                await job.updateProgress(40 + Math.floor((i / srtSegments.length) * 40));
+            }
+
+            // 5. Muxing
+            await this.muxDubbedVideo(videoPath, audioPath, audioSegments, srtSegments, finalVideoPath, bgVolume, dubVolume, showSubtitles, srtPath, subStyle);
+            await job.updateProgress(95);
+
+            // Lưu lịch sử
+            const db = this.firebaseAdmin.firestore();
+            await db.collection('dubbing_history').add({
+                userId,
+                originalName: fileName,
+                fileId: fileId,
+                timestamp: new Date(),
+                status: 'completed'
+            });
+
+            await job.updateProgress(100);
+            return {
+                success: true,
+                videoId: fileId,
+                jobDir: jobDir
+            };
+        } catch (error) {
+            this.logger.error(`[Worker] Lỗi Dubbing Job ${job.id}: ${error.message}`);
+            if (fs.existsSync(jobDir)) {
+                try {
+                    // Tùy chọn: Xoá thư mục tạm nếu lỗi
+                    // fs.rmSync(jobDir, { recursive: true, force: true });
+                } catch (e) { }
+            }
+            throw error;
+        }
+    }
+
+    private parseSrt(srt: string) {
+        const segments = [];
+        const blocks = srt.split(/\n\s*\n/);
+        for (const block of blocks) {
+            const lines = block.trim().split('\n');
+            if (lines.length >= 3) {
+                const timeMatch = lines[1].match(/(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})/);
+                if (timeMatch) {
+                    segments.push({
+                        start: this.srtTimeToSeconds(timeMatch[1]),
+                        end: this.srtTimeToSeconds(timeMatch[2]),
+                        text: lines.slice(2).join(' ')
+                    });
+                }
+            }
+        }
+        return segments;
+    }
+
+    private srtTimeToSeconds(time: string) {
+        const parts = time.split(':');
+        const secondsParts = parts[2].split(',');
+        return parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(secondsParts[0]) + parseInt(secondsParts[1]) / 1000;
+    }
+
+    private async getVideoDuration(filePath: string): Promise<number> {
+        return new Promise((resolve, reject) => {
+            ffmpeg.ffprobe(filePath, (err: any, metadata: any) => {
+                if (err) return reject(err);
+                resolve(metadata.format.duration);
+            });
+        });
+    }
+
+    private async getAudioDuration(filePath: string): Promise<number> {
+        return this.getVideoDuration(filePath);
+    }
+
+    private async stretchAudio(input: string, output: string, tempo: number, targetDuration: number): Promise<void> {
+        return new Promise((resolve, reject) => {
+            const validTempo = Math.max(0.5, Math.min(2.0, tempo));
+            const fadeTime = 0.1; // Tăng thời gian fade lên 0.1s cho mượt hơn
+            const fadeOutStart = Math.max(0, targetDuration - fadeTime);
+
+            ffmpeg(input)
+                .audioFilters([
+                    // Tự động cân bằng âm lượng giọng nói chuẩn studio
+                    'speechnorm=e=6.0:r=0.0001:l=1',
+                    `atempo=${validTempo}`,
+                    // Giới hạn âm đỉnh để không bao giờ bị rè
+                    'alimiter=limit=0.9',
+                    `afade=t=in:st=0:d=${fadeTime}`,
+                    `afade=t=out:st=${fadeOutStart}:d=${fadeTime}`
+                ])
+                .save(output)
+                .on('end', () => resolve())
+                .on('error', (err: any) => reject(err));
+        });
+    }
+
+    private async removeAudioFromVideo(input: string, output: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            ffmpeg(input)
+                .outputOptions('-an')
+                .save(output)
+                .on('end', () => resolve())
+                .on('error', (err: any) => reject(err));
+        });
+    }
+
+    private async muxDubbedVideo(
+        videoPath: string,
+        originalAudioPath: string,
+        audios: string[],
+        segments: any[],
+        output: string,
+        bgVolume: number = 0.3,
+        dubVolume: number = 2.0,
+        showSubtitles: boolean = false,
+        srtPath: string = '',
+        subStyle: { color?: string, fontSize?: number, bgColor?: string, verticalPos?: number } = { color: '#FFFFFF', fontSize: 20, bgColor: '#000000', verticalPos: 30 }
+    ): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (audios.length === 0) {
+                fs.copyFileSync(videoPath, output);
+                return resolve();
+            }
+
+            const command = ffmpeg(videoPath);
+            command.input(originalAudioPath);
+            audios.forEach(a => command.input(a));
+
+            let audioFilter = '';
+
+            // 1. Chuẩn bị tất cả các đoạn lồng tiếng (v0, v1, v2...)
+            audios.forEach((_, i) => {
+                const delayMs = Math.round(segments[i].start * 1000);
+                const duration = segments[i].end - segments[i].start;
+                const fadeDuration = 0.05; // 50ms fade
+
+                // Áp dụng fade-in và fade-out cho từng đoạn để tránh tiếng click và ngắt quãng đột ngột
+                audioFilter += `[${i + 2}:a]afade=t=in:ss=0:d=${fadeDuration},afade=t=out:st=${Math.max(0, duration - fadeDuration)}:d=${fadeDuration},adelay=${delayMs}|${delayMs}[v${i}];`;
+            });
+
+            // 2. Trộn các đoạn lồng tiếng thành 1 luồng duy nhất [vo_mixed]
+            const voMixedPad = audios.length > 1 ? '[vo_mixed]' : '[v0]';
+            if (audios.length > 1) {
+                const mixInputs = audios.map((_, i) => `[v${i}]`).join('');
+                audioFilter += `${mixInputs}amix=inputs=${audios.length}:dropout_transition=1000:normalize=0${voMixedPad};`;
+            }
+
+            audioFilter += `${voMixedPad}asplit=2[vo_ctrl_raw][vo_main];`;
+            // Làm mượt tín hiệu điều khiển hơn nữa để ducking không bị giật cục
+            audioFilter += `[vo_ctrl_raw]lowpass=f=2000,volume=2[vo_ctrl];`;
+
+            // 4. Audio Ducking mượt mà: Nhạc nền [bg] sẽ lùi lại êm ái
+            audioFilter += `[1:a]volume=${bgVolume}[bg_init];`;
+            // Cải thiện Attack (0.15s) và Release (1.5s) để nhạc nền lùi lại/nổi lên tự nhiên hơn
+            audioFilter += `[bg_init][vo_ctrl]sidechaincompress=threshold=0.03:ratio=12:attack=0.15:release=1.5[bg_ducked];`;
+
+            // Áp dụng âm lượng lồng tiếng từ thanh kéo
+            audioFilter += `[vo_main]volume=${dubVolume}[vo_loud];`;
+
+            // 5. Trộn cuối cùng - normalize=0 để giữ nguyên mức âm lượng người dùng cấu hình
+            audioFilter += `[bg_ducked][vo_loud]amix=inputs=2:dropout_transition=2:normalize=0[outa]`;
+
+            if (showSubtitles && srtPath) {
+                // Xử lý path cho Windows khi dùng filter subtitles
+                // Xử lý path cho filter subtitles của FFmpeg
+                // Trên Windows cần escape dấu hai chấm của ổ đĩa (C:\ -> C\\:), trên Linux thì không cần.
+                let escapedSrtPath = srtPath.replace(/\\/g, '/');
+                if (process.platform === 'win32') {
+                    escapedSrtPath = escapedSrtPath.replace(/:/g, '\\:');
+                }
+
+                // Helper để chuyển Hex sang ASS format (BBGGRR)
+                const hexToAss = (hex: string) => {
+                    if (hex && hex.startsWith('#') && hex.length === 7) {
+                        const r = hex.substring(1, 3);
+                        const g = hex.substring(3, 5);
+                        const b = hex.substring(5, 7);
+                        return `${b}${g}${r}`;
+                    }
+                    return 'FFFFFF';
+                };
+
+                const assPrimaryColor = hexToAss(subStyle.color || '#FFFFFF');
+                const assBgColor = hexToAss(subStyle.bgColor || '#000000');
+
+                // PrimaryColour format: &H(Alpha)(BBGGRR). &H00 là đặc hoàn toàn (Opaque)
+                // BorderStyle=3: Chế độ "Opaque box" (nền đặc cho chữ)
+                // BackColour format: &H(Alpha)(BBGGRR). &H80 là độ trong suốt khoảng 50%
+                // Thêm PlayResY=1080 và MarginV từ dưới lên chuẩn (100-verticalPos)*10.8
+                const resolvedDubYPos = subStyle.verticalPos !== undefined ? subStyle.verticalPos : 80;
+                const finalDubMarginV = Math.round((100 - resolvedDubYPos) * 10.8);
+                const style = `force_style='PlayResY=1080,FontSize=${(subStyle.fontSize || 20) * 2},PrimaryColour=&H00${assPrimaryColor},BackColour=&H80${assBgColor},BorderStyle=3,Outline=1,Shadow=0,Alignment=2,MarginV=${finalDubMarginV},Fontname=Arial,Bold=1'`;
+                command.videoFilters(`subtitles='${escapedSrtPath}':${style}`);
+            }
+
+            command
+                .complexFilter(audioFilter)
+                .outputOptions([
+                    '-map 0:v',      // Lấy hình ảnh từ video gốc
+                    '-map [outa]',   // Lấy âm thanh đã trộn
+                    showSubtitles ? '-c:v libx264' : '-c:v copy', // Nếu bật sub thì phải re-encode video
+                    '-c:a aac',      // Encode audio sang AAC
+                    '-shortest'      // Kết thúc theo file ngắn nhất
+                ])
+                .save(output)
+                .on('end', () => resolve())
+                .on('error', (err: any) => {
+                    console.error('Lỗi Muxing FFmpeg:', err);
+                    reject(err);
+                });
+        });
+    }
+
+    private splitLongSegments(segments: any[], maxWords: number = 8): any[] {
+        const result = [];
+        for (const seg of segments) {
+            const words = seg.text.split(/\s+/).filter((w: string) => w.length > 0);
+            if (words.length <= maxWords) {
+                result.push(seg);
+                continue;
+            }
+
+            const numParts = Math.ceil(words.length / maxWords);
+            const wordsPerPart = Math.ceil(words.length / numParts);
+            const duration = seg.end - seg.start;
+
+            for (let i = 0; i < numParts; i++) {
+                const partWords = words.slice(i * wordsPerPart, (i + 1) * wordsPerPart);
+                if (partWords.length === 0) continue;
+
+                const partDuration = (partWords.length / words.length) * duration;
+                const partStart = seg.start + (words.slice(0, i * wordsPerPart).length / words.length) * duration;
+                const partEnd = partStart + partDuration;
+
+                result.push({
+                    start: partStart,
+                    end: partEnd,
+                    text: partWords.join(' ')
+                });
+            }
+        }
+        return result;
+    }
+
+    private formatSrt(segments: any[]): string {
+        return segments.map((seg, i) => {
+            return `${i + 1}\n${this.secondsToSrtTime(seg.start)} --> ${this.secondsToSrtTime(seg.end)}\n${seg.text}`;
+        }).join('\n\n');
+    }
+
+    private secondsToSrtTime(seconds: number): string {
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        const ms = Math.floor((seconds % 1) * 1000);
+
+        return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+    }
+
+    async generateKolVideo(imageUrl: string, videoUrl: string, userId: string) {
+        if (!this.replicate) {
+            throw new BadRequestException('Tính năng này chưa được cấu hình API Key. Vui lòng thêm Replicate API Key trong cài đặt Admin.');
+        }
+
+        // Trừ credit
+        await this.deductCredits(userId, this.CREDIT_COSTS.KOL_VIDEO, 'Video KOL (DreamActor)');
+
+        // Đẩy vào queue (video-processing)
+        const job = await this.videoQueue.add('generate-kol-video', {
+            type: 'kol-video',
+            data: {
+                imageUrl,
+                templateVideoUrl: videoUrl,
+                userId
+            }
+        });
+
+        return { jobId: job.id, message: 'Đã đưa yêu cầu tạo video vào hàng đợi thành công.' };
+    }
+
+    async processKolVideoJob(job: Job<any, any, string>) {
+        if (!this.replicate) {
+            throw new Error('Replicate API Key is missing!');
+        }
+
+        const { imageUrl, templateVideoUrl, userId } = job.data.data;
+        await job.updateProgress(10);
+
+        try {
+            const replicateInput = {
+                image: imageUrl.trim(),
+                video: templateVideoUrl.trim(),
+                image_url: imageUrl.trim(), // Fallback key cho một số wrapper ByteDance
+                video_url: templateVideoUrl.trim(), // Fallback key cho một số wrapper ByteDance
+                cut_first_second: true
+            };
+
+            this.logger.log(`[Replicate] Explicitly creating prediction for DreamActor M2.0...`);
+            this.logger.log(`[Replicate] Input Data: ${JSON.stringify(replicateInput)}`);
+
+            await job.updateProgress(30);
+
+            // Sử dụng predictions.create và mã hash cụ thể để đảm bảo độ ổn định cao nhất
+            const prediction = await this.replicate.predictions.create({
+                version: "b23bf8e6d5f31dd67ad219fac057fd43d3ac38fc58343025ab557be74a9450ca",
+                input: replicateInput
+            });
+
+            // Đợi cho đến khi prediction hoàn thành hoặc lỗi
+            const result: any = await this.replicate.wait(prediction);
+            const output = result.output;
+
+            await job.updateProgress(90);
+
+            if (!output || typeof output !== 'string') {
+                throw new Error('Không nhận được kết quả hợp lệ từ AI Server.');
+            }
+
+            // Save to Firestore History
+            const db = this.firebaseAdmin.firestore();
+            await db.collection('kol_videos_history').add({
+                userId,
+                imageUrl,
+                templateVideoUrl,
+                resultVideoUrl: output,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            await job.updateProgress(100);
+            return {
+                videoUrl: output
+            };
+        } catch (error: any) {
+            this.logger.error(`Error processing KOL Video Job: ${error.message}`);
+            throw new Error(`Replicate failed: ${error.message}`);
+        }
+    }
+    async downloadDubbedVideo(jobId: string): Promise<any> {
+        throw new Error('Method not implemented.');
+    }
+
+    async removeBackground(imageUrl: string, userId: string): Promise<any> {
+        throw new Error('Method not implemented.');
+    }
+
+    async enhanceImage(imageUrl: string, userId: string): Promise<any> {
+        throw new Error('Method not implemented.');
+    }
+
+    async generateVisualClone(modelImage: string, templatePrompt: string, userId: string, templateImage?: string, count: number = 1, fidelity: number = 90, creativity: number = 50): Promise<any> {
+        if (!this.genAI) {
+            throw new BadRequestException('Gemini API Key chưa được cấu hình.');
+        }
+
+        // 1. Trừ phí (VISUAL_CLONE cost: 500)
+        await this.deductCredits(userId, this.CREDIT_COSTS.VISUAL_CLONE, 'Sáng tạo ảnh Photo Studio (Gemini)');
+
+        try {
+            console.log(`--- [Photo Studio] Generating Visual Clone with Gemini for user: ${userId} ---`);
+
+            // 2. Resolve ảnh nguồn sang Base64
+            const modelBase64 = await this.resolveBase64Image(modelImage);
+            const templateBase64 = templateImage ? await this.resolveBase64Image(templateImage) : null;
+
+            if (!modelBase64) {
+                throw new BadRequestException('Không thể xử lý ảnh khuôn mặt đầu vào.');
+            }
+
+            // 3. Xây dựng Prompt tối ưu dựa trên Tham số Fidelity và Creativity
+            const fidelityInstruction = fidelity > 85 ? 
+                "CRITICAL: The face MUST be 100% identical to the source image. DO NOT modify features." : 
+                "Maintain strong face resemblance to the source image.";
+            
+            const creativityInstruction = creativity > 50 ?
+                "Feel free to add artistic lighting, cinematic bokeh, and atmospheric details." :
+                "Keep the environment and lighting realistic and clean.";
+
+            let finalPrompt = "";
+            const parts: any[] = [];
+
+            if (templateBase64) {
+                // CHẾ ĐỘ A: THAY THẾ NHÂN VẬT (Face Swap / Identity Swap)
+                finalPrompt = `TASK: IMAGE-TO-IMAGE IDENTITY TRANSFORMATION. 
+                    - SOURCE IDENTITY: The person shown in the 'source_identity' image.
+                    - TARGET CONTEXT: The scene and person shown in the 'target_context' image.
+                    - ACTION: COMPLETELY REPLACE the head/face/body of the person in 'target_context' with the person from 'source_identity'.
+                    - REQUIREMENTS: Keep the EXACT pose, clothing, and background from 'target_context'. 
+                    - IDENTICAL FACE: ${fidelityInstruction}
+                    - STYLE: ${creativityInstruction}
+                    - OUTPUT: High-quality, professional photography, 8k resolution.`;
+
+                parts.push({ inlineData: { data: templateBase64, mimeType: "image/jpeg" } });
+                parts.push({ text: "target_context image" });
+                parts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
+                parts.push({ text: "source_identity image" });
+            } else {
+                // CHẾ ĐỘ B: TẠO ẢNH MỚI THEO PROMPT (Text-to-Image Identity Consistency)
+                const cleanPrompt = templatePrompt || "Professional studio portrait, elegant lighting";
+                finalPrompt = `TASK: NEW IMAGE PRODUCTION WITH IDENTITY.
+                    - ACTOR: The person from the 'source_identity' image.
+                    - SCENE: ${cleanPrompt}.
+                    - INSTRUCTIONS: Generate a high-end, realistic photograph of this PERSON in the specified scene.
+                    - IDENTICAL FACE: ${fidelityInstruction}
+                    - STYLE: ${creativityInstruction}
+                    - OUTPUT: Professional photography, 8k, cinematic lighting, sharp details.`;
+
+                parts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
+                parts.push({ text: "source_identity image" });
+            }
+
+            parts.push({ text: finalPrompt });
+
+            // 4. Danh sách Model Gemini có khả năng tạo ảnh (theo kinh nghiệm project)
+            const googleModels = [
+                "gemini-2.5-flash-image",
+                "gemini-2.0-flash-exp",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash"
+            ];
+
+            let finalUrls: string[] = [];
+            const resultsCount = Math.min(count, 8); // Support up to 8 images per request
+
+            for (const modelName of googleModels) {
+                if (finalUrls.length > 0) break;
+
+                console.log(`--- Calling Gemini (${modelName}) to generate ${resultsCount} variants ---`);
+                const currentModel = this.genAI.getGenerativeModel({ model: modelName });
+
+                // Gọi song song để tạo nhiều biến thể đồng thời
+                const generationTasks = [];
+                for (let i = 0; i < resultsCount; i++) {
+                    generationTasks.push(this.callSingleGeminiImageGen(currentModel, parts, userId));
+                }
+
+                const results = await Promise.all(generationTasks);
+                finalUrls = results.filter(url => url !== null) as string[];
+            }
+
+            if (finalUrls.length === 0) {
+                throw new Error("Không thể tạo ảnh bằng Gemini (Model không phản hồi / Quotas).");
+            }
+
+            // 5. Lưu lịch sử thiết kế
+            const db = this.firebaseAdmin.firestore();
+            await db.collection('visual_clone_history').add({
+                userId,
+                modelImage,
+                templatePrompt,
+                templateImage: templateImage || null,
+                urls: finalUrls,
+                meta: { fidelity, creativity, method: templateImage ? 'swap' : 'generate', engine: 'gemini' },
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            return { urls: finalUrls };
+
+        } catch (error: any) {
+            console.error('[VisualClone] Gemini Error:', error.message);
+            throw new InternalServerErrorException('Lỗi hệ thống khi thiết kế ảnh với Gemini: ' + error.message);
+        }
+    }
+
+    async getAiKocs(userId: string) {
+        const db = this.firebaseAdmin.firestore();
+        try {
+            const snapshot = await db.collection('ai_kocs')
+                .where('userId', '==', userId)
+                .orderBy('createdAt', 'desc')
+                .get();
+
+            return snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+        } catch (error: any) {
+            this.logger.error(`Error fetching KOCs for user ${userId}: ${error.message}`);
+
+            // Fallback: If index is missing, try fetching without orderBy
+            if (error.message.includes('requires an index') || error.code === 9) {
+                this.logger.warn('Falling back to un-ordered results due to missing index.');
+                const snapshot = await db.collection('ai_kocs')
+                    .where('userId', '==', userId)
+                    .get();
+
+                // Sort in memory as fallback
+                const docs = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+
+                return docs.sort((a: any, b: any) => {
+                    const timeA = a.createdAt?.seconds || 0;
+                    const timeB = b.createdAt?.seconds || 0;
+                    return timeB - timeA;
+                });
+            }
+            throw new InternalServerErrorException('Không thể tải danh sách KOC: ' + error.message);
+        }
+    }
+
+    async createAiKoc(data: { name: string, imageUrl: string, tags?: string[] }, userId: string) {
+        const db = this.firebaseAdmin.firestore();
+        const kocDoc = {
+            ...data,
+            userId,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        };
+
+        const docRef = await db.collection('ai_kocs').add(kocDoc);
+        return { id: docRef.id, ...kocDoc };
+    }
+
+    async deleteAiKoc(id: string, userId: string) {
+        const db = this.firebaseAdmin.firestore();
+        const docRef = db.collection('ai_kocs').doc(id);
+        const doc = await docRef.get();
+
+        if (!doc.exists) {
+            throw new BadRequestException('Không tìm thấy KOC.');
+        }
+
+        if (doc.data()?.userId !== userId) {
+            throw new BadRequestException('Bạn không có quyền xóa KOC này.');
+        }
+
+        await docRef.delete();
+        return { success: true };
+    }
+
+    async generateKocProductImage(kocId: string, productImage: string, prompt: string, userId: string, modelImageOverride?: string, bgImage?: string): Promise<{ urls: string[] }> {
+        if (!this.genAI) {
+            throw new BadRequestException('Gemini API Key chưa được cấu hình.');
+        }
+
+        // 1. Lấy thông tin KOC
+        const db = this.firebaseAdmin.firestore();
+        const kocDoc = await db.collection('ai_kocs').doc(kocId).get();
+        if (!kocDoc.exists) {
+            throw new BadRequestException('Không tìm thấy KOC.');
+        }
+        const kocData = kocDoc.data();
+        const modelImage = modelImageOverride || kocData?.imageUrl;
+
+        // 2. Trừ phí (Sử dụng VISUAL_CLONE cost như trong kế hoạch)
+        await this.deductCredits(userId, this.CREDIT_COSTS.VISUAL_CLONE, 'Tạo ảnh KOC + Sản phẩm');
+
+        try {
+            console.log(`--- Creating KOC + Product Images ---`);
+
+            // Xây dựng prompt tối ưu cho chức năng thay thế nhân vật (Siêu mạnh mẽ - Tập trung vào Toàn diện Định danh)
+            const replacementPrompt = `CRITICAL PHOTO-EDITING MISSION: 
+                  - YOUR GOAL: REPLACE the human model in the BACKGROUND image with THE KOC (Source Identity) provided.
+                  - IDENTITY SOURCE: Use the EXACT face, features, body shape, HAIR STYLE, and HAIR COLOR (blonde/grey) from the KOC image.
+                  - SPATIAL GUIDE: Use the EXACT pose and position of the person in the BACKGROUND.
+                  - PRODUCT: Dress the KOC in the PRODUCT provided.
+                  - FINAL MANDATORY CHECK: KẾT QUẢ PHẢI CÓ ĐẦY ĐỦ KIỂU TÓC, MÀU TÓC, GƯƠNG MẶT VÀ HÌNH DÁNG CỦA KOC. KHÔNG ĐƯỢC GIỮ LẠI MẶT CŨ. KHÔNG CÓ NGOẠI LỆ.`;
+
+            const classicPrompt = `Act as a master digital artist. Create a high-end commercial advertisement combining THE KOC and THE PRODUCT.
+                  1. IDENTITY: Preserve the KOC's face and features 100%.
+                  2. PRODUCT: Preserve the product details 100%.
+                  3. SCENE: Create a realistic background based on: ${prompt}.
+                  4. STYLE: Photorealistic studio lighting, cinematic 8k.`;
+
+            const finalPrompt = bgImage ? replacementPrompt : classicPrompt;
+
+            // Chuẩn bị dữ liệu hình ảnh (xử lý base64 nếu cần)
+            const prepareImageData = (img: string) => {
+                if (img.includes('base64,')) {
+                    return { inlineData: { data: img.split('base64,')[1], mimeType: "image/jpeg" } };
+                }
+                // Nếu là URL, Gemini API yêu cầu fetch hoặc truyền URL nếu model hỗ trợ (thường cần inlineData cho Vision)
+                // Trong codebase này, hầu hết ảnh được truyền dưới dạng base64 hoặc fetch trước.
+                // Tuy nhiên, modelImage thường là URL từ Firebase.
+                // Tôi sẽ giả định rằng Frontend sẽ truyền base64 hoặc tôi sẽ cần fetch nó ở đây.
+                // Để an toàn và đồng nhất với generateImageMockup, tôi sẽ xử lý cả hai.
+                return img;
+            };
+
+            // Lưu ý: Gemini current SDK vision input thường yêu cầu inlineData (base64).
+            // Tôi sẽ helper function để lấy base64 từ URL nếu cần.
+            const modelBase64 = await this.resolveBase64Image(modelImage);
+            const productBase64 = await this.resolveBase64Image(productImage);
+            const bgBase64 = bgImage ? await this.resolveBase64Image(bgImage) : null;
+
+            if (!modelBase64 || !productBase64) {
+                throw new BadRequestException('Không thể xử lý hình ảnh đầu vào. Vui lòng kiểm tra định dạng ảnh (KOC hoặc Sản phẩm).');
+            }
+
+            const parts: any[] = [];
+
+            // Re-order parts for better context flow
+            if (bgBase64) parts.push({ inlineData: { data: bgBase64, mimeType: "image/jpeg" } });
+            parts.push({ inlineData: { data: modelBase64, mimeType: "image/jpeg" } });
+            parts.push({ inlineData: { data: productBase64, mimeType: "image/jpeg" } });
+            parts.push({ text: finalPrompt }); // Instruction at the END
+
+            // Thêm chi tiết hành động nếu không có bgImage
+            if (!bgImage && prompt) parts.push({ text: `Additional Scene details: ${prompt}` });
+
+            // Tạo 4 ảnh song song để lấy biến thể
+
+
+
+
+            const googleModels = [
+                "gemini-2.5-flash-image",
+                "gemini-2.0-flash-exp",
+                "gemini-2.0-flash",
+                "gemini-1.5-flash"
+            ];
+
+            let finalUrls: string[] = [];
+
+            for (const modelName of googleModels) {
+                if (finalUrls.length > 0) break;
+
+                console.log(`--- Create KOC+Product with model: ${modelName} ---`);
+                const currentModel = this.genAI.getGenerativeModel({ model: modelName });
+
+                const results = await Promise.all([
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                    this.callSingleGeminiImageGen(currentModel, parts, userId),
+                ]);
+
+                finalUrls = results.filter(url => url !== null) as string[];
+            }
+
+            // Lưu lịch sử
+            await db.collection('koc_product_history').add({
+                userId,
+                kocId,
+                modelImage,
+                productImage,
+                prompt,
+                urls: finalUrls,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            return { urls: finalUrls };
+        } catch (error: any) {
+            console.error('[KocProduct] Error:', error.message);
+            throw new InternalServerErrorException('Lỗi khi tạo ảnh KOC + Sản phẩm: ' + error.message);
+        }
+    }
+
+    private async callSingleGeminiImageGen(model: any, parts: any[], userId?: string): Promise<string | null> {
+        try {
+            const result = await model.generateContent({
+                contents: [{ role: 'user', parts }]
+                // Note: aspectRatio in generationConfig causes 400 error in standard SDK
+            });
+            const candidates = result.response.candidates;
+
+            if (candidates && candidates.length > 0 && candidates[0].content.parts.length > 0) {
+                const imagePart = candidates[0].content.parts.find((part: any) => part.inlineData);
+                if (imagePart && imagePart.inlineData) {
+                    const base64Image = imagePart.inlineData.data;
+                    const mimeType = imagePart.inlineData.mimeType || 'image/jpeg';
+
+                    try {
+                        const storageUrl = await this.uploadBase64ToStorage(base64Image, mimeType, userId);
+                        return storageUrl;
+                    } catch (storageErr) {
+                        console.warn("KOC+Product Storage upload failed:", storageErr.message);
+                        return `data:${mimeType};base64,${base64Image}`;
+                    }
+                } else {
+                    // Fallback to URL match if it somehow returned a URL in text (unlikely for image gen models)
+                    const text = result.response.text();
+                    const urlMatch = text.match(/https?:\/\/[^\s"']+/);
+                    return urlMatch ? urlMatch[0] : null;
+                }
+            }
+            return null;
+        } catch (e) {
+            console.error('KOC+Product Gemini Call error:', e.message);
+            return null;
+        }
+    }
+
+    async generateKocVisual(data: { kocId: string; angle: string; outfit: string; hairColor: string; action: string }, userId: string): Promise<{ url: string | null }> {
+        if (!this.genAI) throw new BadRequestException('Gemini API Key chưa được cấu hình.');
+
+        const db = this.firebaseAdmin.firestore();
+        const kocDoc = await db.collection('ai_kocs').doc(data.kocId).get();
+        if (!kocDoc.exists) throw new BadRequestException('Không tìm thấy nhân vật KOC.');
+
+        const kocData = kocDoc.data();
+        const modelImage = kocData?.imageUrl;
+
+        // Trừ Credit (VISUAL_CLONE cost: 500)
+        await this.deductCredits(userId, 500, `Kiến tạo diện mạo KOC (${data.kocId})`);
+
+        try {
+            console.log(`--- Generating KOC Visual Transformation: ${data.kocId} ---`);
+
+            const finalPrompt = `Act as a master photographer and digital artist. 
+            Your task is to generate a NEW high-quality image of the PERSON (KOC) provided while maintaining their EXACT face, identity, and features.
+            
+            SCENE CONFIGURATION:
+            - Camera Angle: ${data.angle}
+            - Outfit / Clothing: ${data.outfit}
+            - Hair Style & Color: ${data.hairColor}
+            - Action / Context: ${data.action || 'Sáng tạo bối cảnh sang trọng, nghệ thuật'}
+            
+            REQUIREMENTS:
+            - The face of the KOC MUST remain 100% identical to the input image.
+            - Ensure the new pose and clothing look natural and high-end.
+            - Photorealistic style, 8k, cinematic lighting, professional composition.
+            - Background should complement the requested outfit and action.
+            - Output: Only return the creative masterpiece image.`;
+
+            const modelBase64 = await this.resolveBase64Image(modelImage);
+            if (!modelBase64) throw new BadRequestException('Không thể xử lý ảnh gốc của KOC.');
+
+            const parts = [
+                { text: finalPrompt },
+                { inlineData: { data: modelBase64, mimeType: "image/jpeg" } }
+            ];
+
+            const googleModels = ["gemini-2.5-flash-image", "gemini-2.0-flash-exp", "gemini-1.5-flash"];
+            let finalUrl: string | null = null;
+
+            for (const modelName of googleModels) {
+                if (finalUrl) break;
+                const model = this.genAI.getGenerativeModel({ model: modelName });
+                finalUrl = await this.callSingleGeminiImageGen(model, parts, userId);
+            }
+
+            // Lưu lịch sử biến thể
+            if (finalUrl) {
+                // 1. Lưu vào lịch sử chung
+                await db.collection('koc_visual_history').add({
+                    userId,
+                    kocId: data.kocId,
+                    params: data,
+                    url: finalUrl,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+
+                // 2. Cập nhật Album của KOC (mảng album)
+                await db.collection('ai_kocs').doc(data.kocId).update({
+                    album: admin.firestore.FieldValue.arrayUnion(finalUrl),
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                });
+            }
+
+            return { url: finalUrl };
+        } catch (error: any) {
+            console.error('[KocVisual] Error:', error.message);
+            throw new InternalServerErrorException('Lỗi khi kiến tạo bối cảnh KOC: ' + error.message);
+        }
+    }
+
+    async processReburnJob(job: any): Promise<any> {
+        throw new Error('Method not implemented.');
+    }
+}

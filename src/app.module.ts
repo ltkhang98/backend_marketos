@@ -16,6 +16,7 @@ import { MailModule } from './mail/mail.module';
 import { StoreOrdersModule } from './store-orders/store-orders.module';
 import { FacebookModule } from './facebook/facebook.module';
 import { LoggerModule } from './common/logger/logger.module';
+import { MediaModule } from './media/media.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { LoggerModule } from './common/logger/logger.module';
     StoreOrdersModule,
     FacebookModule,
     LoggerModule,
+    MediaModule,
   ],
   controllers: [AppController],
   providers: [AppService],
